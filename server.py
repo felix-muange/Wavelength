@@ -6,15 +6,16 @@ from yt_dlp import YoutubeDL
 
 app = FastAPI()
 
-# ── Allowed hosts for the /proxy endpoint ──
 ALLOWED_HOSTS = [
     'www.youtube.com',
     'noembed.com',
     'i.ytimg.com',
 ]
 
-# ── yt-dlp options (fetches all formats; we pick the best audio manually) ──
+# ── yt-dlp options with iOS‑compatible format selection ──
 YDL_OPTS = {
+    # Prefer M4A (AAC), then MP3, then any other audio‑only format
+    'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best',
     'quiet': True,
     'no_warnings': True,
     'extract_flat': False,
@@ -27,7 +28,6 @@ def is_allowed(target_url: str) -> bool:
     return any(hostname == h or hostname.endswith('.' + h) for h in ALLOWED_HOSTS)
 
 async def fetch_proxy_url(target_url: str) -> tuple[bytes, str]:
-    """Fetches a URL, follows up to 5 redirects, returns (content, content_type)."""
     if not is_allowed(target_url):
         raise HTTPException(status_code=403, detail="Domain not in allowlist")
 
@@ -58,17 +58,14 @@ async def fetch_proxy_url(target_url: str) -> tuple[bytes, str]:
                 return content, resp.content_type or 'text/plain'
         raise HTTPException(status_code=502, detail="Too many redirects")
 
-# ── Health check ──
 @app.get("/health")
 async def health():
     return {"status": "ok", "uptime": "N/A", "port": 3001}
 
-# ── Serve the frontend ──
 @app.get("/")
 async def serve_frontend():
     return FileResponse("index.html", media_type="text/html")
 
-# ── Proxy endpoint (search & metadata) ──
 @app.get("/proxy")
 async def proxy(url: str = Query(..., description="Target URL to proxy")):
     if not url:
@@ -76,35 +73,26 @@ async def proxy(url: str = Query(..., description="Target URL to proxy")):
     content, content_type = await fetch_proxy_url(url)
     return Response(content=content, media_type=content_type)
 
-# ── Stream endpoint (best audio quality, streamed directly) ──
 @app.get("/stream")
 async def stream(videoId: str = Query(..., description="11-character YouTube video ID")):
     if not re.match(r'^[a-zA-Z0-9_-]{11}$', videoId):
         raise HTTPException(status_code=400, detail="Invalid videoId")
 
-    # Get all available formats using yt-dlp
+    # Extract info with iOS‑compatible format selector
     with YoutubeDL(YDL_OPTS) as ydl:
         try:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={videoId}", download=False)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"yt-dlp error: {str(e)}")
 
-    # Pick the best audio-only format (highest bitrate)
-    audio_formats = [
-        f for f in info.get('formats', [])
-        if f.get('acodec') != 'none' and f.get('vcodec') == 'none'
-    ]
-    if not audio_formats:
-        raise HTTPException(status_code=404, detail="No audio-only format found")
-
-    # Sort by audio bitrate (highest first) – guarantees best quality
-    audio_formats.sort(key=lambda f: f.get('abr', 0) or 0, reverse=True)
-    best_audio = audio_formats[0]
-    audio_url = best_audio.get('url')
+    audio_url = info.get('url')
     if not audio_url:
-        raise HTTPException(status_code=500, detail="Could not extract audio URL")
+        raise HTTPException(status_code=404, detail="No compatible audio stream found")
 
-    # Stream the audio back to the client
+    # Determine content‑type from the selected format
+    ext = info.get('ext', 'mp4')  # yt-dlp sets ext (m4a, mp3, etc.)
+    content_type = f'audio/{ext}' if ext != 'mp4' else 'audio/mp4'
+
     async def audio_stream():
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -114,12 +102,11 @@ async def stream(videoId: str = Query(..., description="11-character YouTube vid
             async with session.get(audio_url, headers=headers) as resp:
                 if resp.status != 200:
                     raise HTTPException(status_code=resp.status, detail="Audio source unavailable")
-                # 64 KB chunks – smooth, low‑latency streaming
                 async for chunk in resp.content.iter_chunked(65536):
                     yield chunk
 
     return StreamingResponse(
         audio_stream(),
-        media_type=best_audio.get('mime_type', 'audio/mp4'),
+        media_type=content_type,
         headers={"Transfer-Encoding": "chunked", "Cache-Control": "no-cache"}
     )
