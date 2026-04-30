@@ -1,155 +1,112 @@
-# Wavelength 🎵
+Wavelength 🎵
+A premium, no‑API‑key YouTube music player with background playback and PWA support – works offline after first visit, and can be installed to your phone’s home screen like a native app.
 
-A premium, no-API-key YouTube music player.
+🚀 Run locally
+Prerequisites: Python 3.9+ and pip.
 
----
+bash
+# Install dependencies
+pip install -r requirements.txt
 
-## Run locally
+# Start the server
+uvicorn server:app --host 0.0.0.0 --port 3001
+Then open http://localhost:3001 in your browser.
+That’s it – no API keys, no accounts required.
 
-```bash
-node server.js
-# Open http://localhost:3001
-```
+📱 Progressive Web App (PWA)
+After visiting the site once, you can install it as a standalone app:
 
-Zero dependencies. Node 18+ only.
+iOS Safari: tap the Share button → “Add to Home Screen”
 
----
+Android Chrome: tap the menu → “Install app”
 
-## Deploy to Railway (free, public HTTPS URL, works on mobile)
+The app will open in full‑screen mode with a premium icon, and even works offline thanks to the included service worker.
 
-Follow these steps exactly — it takes about 5 minutes.
+☁️ Deploy to Railway (free, public HTTPS URL)
+Railway gives you a free $5 monthly credit – more than enough for this lightweight Python service.
 
----
+1 – Create a GitHub repo
+Go to GitHub and create a public repository (name it wavelength-player or anything).
 
-### Step 1 — Create a GitHub account (if you don't have one)
+Push all project files to the repo:
 
-Go to https://github.com and sign up. It's free.
-
----
-
-### Step 2 — Create a new GitHub repository
-
-1. Go to https://github.com/new
-2. Name it `wavelength-player` (or anything you like)
-3. Set it to **Public**
-4. Leave everything else unchecked
-5. Click **Create repository**
-
----
-
-### Step 3 — Upload the project files to GitHub
-
-On the repository page you just created, click **uploading an existing file**.
-
-Drag and drop ALL files from this folder:
-```
-server.js
-package.json
+text
+server.py
+requirements.txt
 railway.json
 .gitignore
 index.html
-```
+manifest.json
+sw.js
+icon.svg
+(If you’re using git: git init, git add ., git commit, then push.)
 
-Then scroll down, click **Commit changes**.
+2 – Deploy on Railway
+Sign up at Railway using your GitHub account.
 
-> If you're comfortable with Git, you can also do:
-> ```bash
-> git init
-> git add .
-> git commit -m "initial commit"
-> git remote add origin https://github.com/YOUR_USERNAME/wavelength-player.git
-> git push -u origin main
-> ```
+Click New Project → Deploy from GitHub repo.
 
----
+Select your wavelength-player repository.
 
-### Step 4 — Create a Railway account
+Railway will detect the Python project, install dependencies from requirements.txt, and start the server using the command in railway.json.
 
-1. Go to https://railway.app
-2. Click **Login** → **Login with GitHub**
-3. Authorize Railway to access your GitHub
+3 – Get your public URL
+In your Railway project, go to the Settings tab.
 
-Railway gives you **$5 free credit per month** — more than enough for this app
-(a lightweight Node server uses roughly $0.50–1.00/month).
+Under Networking, click Generate Domain.
 
----
+You’ll receive a URL like https://wavelength-player-production.up.railway.app.
 
-### Step 5 — Deploy to Railway
+Open that URL on any device – the music player is live with background playback, just like the local version.
 
-1. On the Railway dashboard, click **New Project**
-2. Click **Deploy from GitHub repo**
-3. Select your `wavelength-player` repository
-4. Railway auto-detects Node.js and starts deploying
+⚙️ How it works
+Frontend: Pure HTML/CSS/JS (index.html) – responsive, dark UI with gold accents.
 
-Wait about 60 seconds. You'll see build logs streaming in.
+Backend: Python FastAPI server (server.py) that:
 
----
+Serves the frontend and static files.
 
-### Step 6 — Get your public URL
+Proxies YouTube search results and metadata (noembed).
 
-1. Click on your deployment (the card that appeared)
-2. Click the **Settings** tab
-3. Under **Networking**, click **Generate Domain**
-4. Railway gives you a URL like: `https://wavelength-player-production.up.railway.app`
+Uses yt-dlp to extract the best audio‑only stream URL for any YouTube video.
 
-That's your permanent public URL — open it on your phone, share it, bookmark it.
+Audio streaming: The <audio> element plays directly from a /stream?videoId=... endpoint, which pipes the raw audio data back to the client.
 
----
+Background playback: The native audio element plus Media Session API keep music playing when you lock the screen or switch apps.
 
-### Step 7 — Open on mobile
+PWA: manifest.json and sw.js enable install‑to‑home‑screen and offline caching.
 
-Just visit your Railway URL in Safari or Chrome on your phone. No app install needed.
-
-For the best experience on iOS:
-1. Open the URL in Safari
-2. Tap the **Share** button (box with arrow)
-3. Tap **Add to Home Screen**
-4. It works like a native app — full screen, no browser bar
-
----
-
-## File structure
-
-```
+📁 File structure
+text
 wavelength-player/
-├── server.js      ← Node server (proxy + static file serving)
-├── index.html     ← Full frontend app
-├── package.json   ← npm config (no dependencies!)
-├── railway.json   ← Railway deployment config
-└── .gitignore
-```
+├── server.py          # FastAPI backend (proxying, streaming)
+├── requirements.txt   # Python dependencies
+├── railway.json       # Railway deployment config
+├── index.html         # Complete frontend (responsive, PWA‑enabled)
+├── manifest.json      # PWA manifest (icon, colors, display mode)
+├── sw.js              # Service worker (offline cache)
+├── icon.svg           # Premium app icon (vector)
+└── .gitignore         # Python ignores (venv, __pycache__)
+🔁 Updating after deployment
+Just push new commits to your GitHub repository. Railway automatically redeploys on every push to the main branch – no manual steps needed.
 
----
+🛠️ Troubleshooting
+Problem	Fix
+Build fails	Check Railway logs – often a missing dependency or syntax error
+Search works but playback doesn’t	Verify that yt-dlp is installed and up‑to‑date (pip install --upgrade yt-dlp)
+“No audio-only format found”	Some very new videos may not have audio‑only formats yet; try another track
+Domain not in allowlist	The proxy only allows YouTube, noembed, and i.ytimg.com – no other hosts are accessible
+💡 Tech stack
+Python 3 with FastAPI & Uvicorn
 
-## How the proxy auto-detects environment
+yt‑dlp for audio extraction
 
-In `index.html`, the `PROXY` constant is set automatically:
+aiohttp for async proxying
 
-```js
-const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-  ? `http://${location.hostname}:3001`  // local dev
-  : '';                                  // Railway: same-origin, no prefix needed
-```
+Vanilla JS frontend (no frameworks)
 
-This means the same `index.html` works both locally and on Railway
-with no changes required.
+Service Worker API for offline support
 
----
+Media Session API for lock‑screen controls
 
-## Updating the app after deployment
-
-1. Edit files locally
-2. Go to your GitHub repo → click a file → click the pencil icon to edit
-3. Or push a new commit via Git
-4. Railway **automatically redeploys** on every push to `main`
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| Build fails | Check logs in Railway dashboard — usually a syntax error in server.js |
-| App loads but search fails | Railway is running — check browser console for proxy errors |
-| "Embed disabled" on videos | Normal — the app auto-skips to the next track |
-| Free credit runs out | Railway charges ~$5/month after free tier — or redeploy on Render.com free tier |
+Enjoy your premium, background‑ready music player 🎧

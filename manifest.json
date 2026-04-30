@@ -1,0 +1,13 @@
+{
+  "name": "Wavelength",
+  "short_name": "Wavelength",
+  "description": "Premium music player by Felix Mwaka",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a0c",
+  "theme_color": "#0a0a0c",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
