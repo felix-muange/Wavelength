@@ -12,10 +12,8 @@ ALLOWED_HOSTS = [
     'i.ytimg.com',
 ]
 
-# ── yt-dlp options with iOS‑compatible format selection ──
+# ── yt‑dlp base options (no strict format filter – we'll pick manually) ──
 YDL_OPTS = {
-    # Prefer M4A (AAC), then MP3, then any other audio‑only format
-    'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best',
     'quiet': True,
     'no_warnings': True,
     'extract_flat': False,
@@ -78,24 +76,54 @@ async def stream(videoId: str = Query(..., description="11-character YouTube vid
     if not re.match(r'^[a-zA-Z0-9_-]{11}$', videoId):
         raise HTTPException(status_code=400, detail="Invalid videoId")
 
-    # Extract info with iOS‑compatible format selector
+    # Extract video info (all formats)
     with YoutubeDL(YDL_OPTS) as ydl:
         try:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={videoId}", download=False)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"yt-dlp error: {str(e)}")
 
-    audio_url = info.get('url')
-    if not audio_url:
+    formats = info.get('formats', [])
+    # Filter audio‑only formats that are directly streamable (https protocol, not a manifest)
+    direct_audio = [
+        f for f in formats
+        if f.get('acodec') != 'none'
+        and f.get('vcodec') == 'none'
+        and f.get('protocol') == 'https'
+        and f.get('url')  # has a direct URL
+    ]
+
+    if not direct_audio:
         raise HTTPException(status_code=404, detail="No compatible audio stream found")
 
-    # Determine content‑type from the selected format
-    ext = info.get('ext', 'mp4')  # yt-dlp sets ext (m4a, mp3, etc.)
-    content_type = f'audio/{ext}' if ext != 'mp4' else 'audio/mp4'
+    # Prefer M4A (AAC) then MP3, then anything else – all will play on iOS
+    def format_priority(f):
+        ext = f.get('ext', '')
+        if ext == 'm4a':
+            return 0
+        if ext == 'mp3':
+            return 1
+        return 2
+
+    direct_audio.sort(key=lambda f: (format_priority(f), -(f.get('abr') or 0)))
+    best = direct_audio[0]
+    audio_url = best['url']
+    ext = best.get('ext', 'mp4')
+
+    # Map file extension to proper Content‑Type
+    content_type_map = {
+        'm4a': 'audio/mp4',
+        'mp3': 'audio/mpeg',
+        'mp4': 'audio/mp4',
+        'webm': 'audio/webm',   # fallback, may not play on iOS
+        'ogg': 'audio/ogg',
+    }
+    content_type = content_type_map.get(ext, 'audio/mp4')
 
     async def audio_stream():
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Referer': 'https://www.youtube.com/',
         }
         timeout = aiohttp.ClientTimeout(total=None, sock_read=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -108,5 +136,9 @@ async def stream(videoId: str = Query(..., description="11-character YouTube vid
     return StreamingResponse(
         audio_stream(),
         media_type=content_type,
-        headers={"Transfer-Encoding": "chunked", "Cache-Control": "no-cache"}
+        headers={
+            "Transfer-Encoding": "chunked",
+            "Cache-Control": "no-cache",
+            "Accept-Ranges": "none",
+        }
     )
