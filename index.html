@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wavelength</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400&family=Syne:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:        #0a0a0c;
+    --bg2:       #111115;
+    --bg3:       #18181e;
+    --bg4:       #1e1e26;
+    --line:      rgba(255,255,255,0.07);
+    --line2:     rgba(255,255,255,0.12);
+    --gold:      #c9a96e;
+    --gold2:     #e8c98a;
+    --gold-dim:  rgba(201,169,110,0.15);
+    --gold-glow: rgba(201,169,110,0.06);
+    --text:      #f0ede8;
+    --text2:     #9b9890;
+    --text3:     #5a5855;
+    --active-bg: rgba(201,169,110,0.08);
+    --radius:    6px;
+    --font-display: 'Cormorant Garamond', serif;
+    --font-ui:      'Syne', sans-serif;
+    --font-mono:    'DM Mono', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font-ui); overflow: hidden; }
+
+  /* Subtle grain overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E");
+    opacity: 0.025;
+  }
+
+  #app {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    grid-template-columns: 300px 1fr;
+    grid-template-areas:
+      "header header"
+      "sidebar player"
+      "nowplaying nowplaying";
+    height: 100vh;
+    max-width: 1200px;
+    margin: 0 auto;
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+  }
+
+  /* ── HEADER ── */
+  #header {
+    grid-area: header;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 20px 28px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+  }
+
+  .logo {
+    font-family: var(--font-display);
+    font-size: 26px;
+    font-weight: 300;
+    letter-spacing: 0.08em;
+    color: var(--text);
+    white-space: nowrap;
+    font-style: italic;
+  }
+  .logo span { color: var(--gold); font-style: normal; }
+
+  .search-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0;
+    background: var(--bg3);
+    border: 1px solid var(--line2);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .search-wrap:focus-within { border-color: var(--gold); }
+
+  #q {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 400;
+    padding: 11px 14px;
+    letter-spacing: 0.02em;
+  }
+  #q::placeholder { color: var(--text3); }
+
+  #searchBtn {
+    background: transparent;
+    border: none;
+    border-left: 1px solid var(--line2);
+    color: var(--gold);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    padding: 11px 18px;
+    cursor: pointer;
+    white-space: nowrap;
+    text-transform: uppercase;
+    transition: background 0.15s, color 0.15s;
+  }
+  #searchBtn:hover { background: var(--gold-dim); color: var(--gold2); }
+
+  .proxy-status {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text3);
+    white-space: nowrap;
+  }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--text3);
+    transition: background 0.3s;
+  }
+  .dot.ok { background: #4caf6e; box-shadow: 0 0 6px rgba(76,175,110,0.4); }
+  .dot.err { background: #e24b4a; }
+
+  /* ── SIDEBAR ── */
+  #sidebar {
+    grid-area: sidebar;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--line);
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  .sidebar-label {
+    padding: 14px 18px 10px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 400;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text3);
+    border-bottom: 1px solid var(--line);
+  }
+
+  #results-list { overflow-y: auto; flex: 1; }
+  #results-list::-webkit-scrollbar { width: 3px; }
+  #results-list::-webkit-scrollbar-track { background: transparent; }
+  #results-list::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 2px; }
+
+  #empty-state {
+    padding: 3rem 1.5rem;
+    text-align: center;
+  }
+  .empty-icon {
+    width: 48px; height: 48px; margin: 0 auto 16px;
+    border: 1px solid var(--line2);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .empty-icon svg { opacity: 0.3; }
+  #empty-state p {
+    font-family: var(--font-display);
+    font-size: 17px;
+    font-weight: 300;
+    font-style: italic;
+    color: var(--text3);
+    line-height: 1.6;
+  }
+
+  .r-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--line);
+    transition: background 0.15s;
+    position: relative;
+  }
+  .r-item::before {
+    content: '';
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: var(--gold);
+    transform: scaleY(0);
+    transition: transform 0.2s;
+  }
+  .r-item:hover { background: var(--bg3); }
+  .r-item.active { background: var(--active-bg); }
+  .r-item.active::before { transform: scaleY(1); }
+
+  .r-num {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text3);
+    min-width: 18px;
+    text-align: right;
+  }
+  .r-item.active .r-num { color: var(--gold); }
+
+  .r-thumb {
+    width: 56px; height: 38px;
+    border-radius: 3px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--bg3);
+    opacity: 0.85;
+  }
+  .r-item.active .r-thumb { opacity: 1; }
+
+  .r-info { flex: 1; min-width: 0; }
+  .r-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    letter-spacing: 0.01em;
+  }
+  .r-item.active .r-title { color: var(--gold2); }
+  .r-ch {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text3);
+    margin-top: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.03em;
+  }
+
+  /* playing indicator */
+  .bars {
+    display: none;
+    align-items: flex-end;
+    gap: 2px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+  .r-item.active .bars { display: flex; }
+  .bars span {
+    display: block; width: 3px;
+    background: var(--gold);
+    border-radius: 1px;
+    animation: barBounce 0.8s ease-in-out infinite alternate;
+  }
+  .bars span:nth-child(1) { height: 6px; animation-delay: 0s; }
+  .bars span:nth-child(2) { height: 12px; animation-delay: 0.2s; }
+  .bars span:nth-child(3) { height: 8px; animation-delay: 0.4s; }
+  @keyframes barBounce {
+    from { transform: scaleY(0.4); }
+    to   { transform: scaleY(1); }
+  }
+
+  /* ── PLAYER COLUMN ── */
+  #player-col {
+    grid-area: player;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg2);
+    overflow: hidden;
+  }
+
+  #yt-wrap {
+    width: 100%;
+    aspect-ratio: 16/9;
+    background: #000;
+    position: relative;
+    flex-shrink: 0;
+  }
+  #yt-wrap iframe { width: 100%; height: 100%; display: block; }
+
+  /* Black vignette overlay at bottom of video */
+  #yt-wrap::after {
+    content: '';
+    position: absolute; bottom: 0; left: 0; right: 0;
+    height: 60px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.6));
+    pointer-events: none;
+  }
+
+  #controls-area {
+    flex: 1;
+    padding: 24px 28px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .track-info {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .track-title {
+    font-family: var(--font-display);
+    font-size: 28px;
+    font-weight: 300;
+    line-height: 1.2;
+    color: var(--text);
+    letter-spacing: 0.01em;
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .track-ch {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--gold);
+    letter-spacing: 0.1em;
+    margin-top: 4px;
+    text-transform: uppercase;
+  }
+
+  /* Progress */
+  .prog-wrap { display: flex; flex-direction: column; gap: 5px; }
+  #prog {
+    width: 100%;
+    height: 2px;
+    background: var(--line2);
+    border-radius: 1px;
+    cursor: pointer;
+    position: relative;
+  }
+  #prog-fill {
+    height: 100%;
+    background: var(--gold);
+    border-radius: 1px;
+    width: 0%;
+    transition: width 0.5s linear;
+    position: relative;
+    pointer-events: none;
+  }
+  #prog-fill::after {
+    content: '';
+    position: absolute; right: -4px; top: -3px;
+    width: 8px; height: 8px;
+    background: var(--gold2);
+    border-radius: 50%;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  #prog:hover #prog-fill::after { opacity: 1; }
+
+  .time-row {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text3);
+    letter-spacing: 0.05em;
+  }
+
+  /* Main controls */
+  .ctrl-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    justify-content: center;
+  }
+
+  .cb {
+    background: transparent;
+    border: 1px solid var(--line2);
+    color: var(--text2);
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .cb:hover { border-color: var(--gold); color: var(--gold); background: var(--gold-glow); }
+
+  .cb.sm { width: 36px; height: 36px; }
+  .cb.lg {
+    width: 50px; height: 50px;
+    border-color: var(--gold);
+    background: var(--gold-dim);
+    color: var(--gold2);
+  }
+  .cb.lg:hover { background: rgba(201,169,110,0.25); }
+
+  /* SVG icons */
+  .cb svg { pointer-events: none; }
+
+  /* Volume */
+  .vol-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .vol-row svg { flex-shrink: 0; color: var(--text3); }
+  .vol-row input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 2px;
+    background: var(--line2);
+    border-radius: 1px;
+    outline: none;
+    cursor: pointer;
+  }
+  .vol-row input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--gold);
+    cursor: pointer;
+    transition: transform 0.15s;
+  }
+  .vol-row input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+  #volv {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text3);
+    min-width: 30px;
+    text-align: right;
+    letter-spacing: 0.05em;
+  }
+
+  /* ── NOW PLAYING BAR ── */
+  #statusbar {
+    grid-area: nowplaying;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 28px;
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text3);
+    letter-spacing: 0.06em;
+    min-height: 38px;
+  }
+  .status-icon { color: var(--gold); }
+
+  .spin {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border: 1.5px solid var(--line2);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: sp .7s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes sp { to { transform: rotate(360deg); } }
+
+  /* Skeleton loading */
+  .skel {
+    display: flex; gap: 10px; padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    align-items: center;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  .skel-thumb { width: 56px; height: 38px; border-radius: 3px; background: var(--bg3); flex-shrink: 0; }
+  .skel-lines { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .skel-line { height: 8px; background: var(--bg3); border-radius: 2px; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- HEADER -->
+  <header id="header">
+    <div class="logo">Wave<span>length</span></div>
+    <div class="search-wrap">
+      <input type="text" id="q" placeholder="Search music, artists, albums…" autocomplete="off" spellcheck="false" />
+      <button id="searchBtn">Search</button>
+    </div>
+    <div class="proxy-status">
+      <div class="dot" id="proxyDot"></div>
+      <span id="proxyLabel">proxy</span>
+    </div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <aside id="sidebar">
+    <div class="sidebar-label">Queue</div>
+    <div id="results-list">
+      <div id="empty-state">
+        <div class="empty-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zm12-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
+          </svg>
+        </div>
+        <p>Search for a song<br/>to build your queue</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- PLAYER -->
+  <main id="player-col">
+    <div id="yt-wrap">
+      <div id="ytPlayer"></div>
+    </div>
+    <div id="controls-area">
+      <div class="track-info">
+        <div>
+          <div class="track-title" id="np-title">Nothing playing</div>
+          <div class="track-ch" id="np-ch">Search to begin</div>
+        </div>
+      </div>
+
+      <div class="prog-wrap">
+        <div id="prog"><div id="prog-fill"></div></div>
+        <div class="time-row"><span id="tc">0:00</span><span id="td">0:00</span></div>
+      </div>
+
+      <div class="ctrl-row">
+        <!-- Prev -->
+        <button class="cb sm" id="prevBtn" title="Previous">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
+          </svg>
+        </button>
+        <!-- Play/Pause -->
+        <button class="cb lg" id="ppBtn" title="Play / Pause">
+          <svg id="playIcon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z"/>
+          </svg>
+          <svg id="pauseIcon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+            <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+          </svg>
+        </button>
+        <!-- Next -->
+        <button class="cb sm" id="nextBtn" title="Next">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2z"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="vol-row">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06A9 9 0 0 0 14 3.23z"/>
+        </svg>
+        <input type="range" id="vol" min="0" max="100" value="85" step="1" />
+        <span id="volv">85%</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- STATUS BAR -->
+  <div id="statusbar">
+    <span class="status-icon">◆</span>
+    <span id="statusMsg">Ready — search to begin</span>
+  </div>
+
+</div>
+
+<script>
+// Auto-detect: on Railway (or any remote host) the proxy is same-origin.
+// Locally it runs on port 3001.
+const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+  ? `http://${location.hostname}:3001`
+  : '';
+const $ = id => document.getElementById(id);
+
+let player = null, ytReady = false, playing = false;
+let queue = [], curIdx = -1, progTimer = null;
+
+// ── Proxy health check ──
+async function checkProxy() {
+  try {
+    const r = await fetch(`${PROXY}/health`, { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      $('proxyDot').className = 'dot ok';
+      $('proxyLabel').textContent = 'proxy ok';
+    } else { proxyErr(); }
+  } catch { proxyErr(); }
+}
+function proxyErr() {
+  $('proxyDot').className = 'dot err';
+  $('proxyLabel').textContent = 'proxy down';
+  setStatus('Proxy offline — run: node proxy/server.js');
+}
+checkProxy();
+setInterval(checkProxy, 15000);
+
+// ── Utilities ──
+function setStatus(msg, loading = false) {
+  $('statusMsg').innerHTML = loading ? `<span class="spin"></span> ${msg}` : msg;
+}
+function fmt(s) {
+  if (isNaN(s) || s < 0) return '0:00';
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── YT Player ──
+function setPP(isP) {
+  $('playIcon').style.display  = isP ? 'none'  : '';
+  $('pauseIcon').style.display = isP ? ''      : 'none';
+  playing = isP;
+  // animate bars on active item
+  document.querySelectorAll('.r-item').forEach((el, i) => {
+    const bars = el.querySelector('.bars');
+    if (bars) bars.style.animationPlayState = (i === curIdx && isP) ? 'running' : 'paused';
+  });
+}
+
+function startProg() {
+  clearInterval(progTimer);
+  progTimer = setInterval(() => {
+    if (!player || typeof player.getCurrentTime !== 'function') return;
+    try {
+      const c = player.getCurrentTime(), d = player.getDuration();
+      $('tc').textContent = fmt(c);
+      $('td').textContent = fmt(d);
+      if (d > 0) $('prog-fill').style.width = Math.round(c / d * 100) + '%';
+    } catch(e) {}
+  }, 800);
+}
+
+function loadAndPlay(idx) {
+  if (idx < 0 || idx >= queue.length) return;
+  curIdx = idx;
+  const it = queue[idx];
+  document.querySelectorAll('.r-item').forEach((el, i) => el.classList.toggle('active', i === idx));
+  $('np-title').textContent = it.title;
+  $('np-ch').textContent = it.author || '';
+  setStatus(`Playing — ${it.title}`);
+  if (player && typeof player.loadVideoById === 'function') {
+    player.loadVideoById(it.id);
+    setPP(true); startProg();
+  } else {
+    initYT(it.id);
+  }
+}
+
+function initYT(videoId) {
+  if (!ytReady) { window.__pv = videoId; return; }
+  player = new YT.Player('ytPlayer', {
+    height: '100%', width: '100%', videoId,
+    playerVars: { autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1 },
+    events: {
+      onReady(e) {
+        e.target.setVolume(parseInt($('vol').value));
+        e.target.playVideo();
+        setPP(true); startProg();
+      },
+      onStateChange(e) {
+        if (e.data === YT.PlayerState.ENDED) {
+          curIdx < queue.length - 1 ? loadAndPlay(curIdx + 1) : (setPP(false), clearInterval(progTimer));
+        }
+        if (e.data === YT.PlayerState.PLAYING) { setPP(true); startProg(); }
+        if (e.data === YT.PlayerState.PAUSED)  { setPP(false); }
+      },
+      onError(e) {
+        // YouTube error codes: 2=bad param, 5=HTML5 error, 100=not found/private,
+        // 101/150=embed not allowed for this video
+        const msgs = {
+          2:   'Invalid video — try another track.',
+          5:   'HTML5 playback error — try another track.',
+          100: 'Video not found or private.',
+          101: 'Embedding disabled for this video — try another track.',
+          150: 'Embedding disabled for this video — try another track.',
+        };
+        setStatus(msgs[e.data] || 'Playback error — try another track.');
+        // Auto-skip to next if available
+        if ([100,101,150].includes(e.data) && curIdx < queue.length - 1) {
+          setTimeout(() => loadAndPlay(curIdx + 1), 1500);
+        }
+      }
+    }
+  });
+}
+
+window.onYouTubeIframeAPIReady = function() {
+  ytReady = true;
+  if (window.__pv) { initYT(window.__pv); window.__pv = null; }
+};
+
+// ── Search ──
+function showSkeletons() {
+  const list = $('results-list');
+  list.innerHTML = '';
+  for (let i = 0; i < 6; i++) {
+    list.innerHTML += `<div class="skel">
+      <div class="skel-thumb"></div>
+      <div class="skel-lines">
+        <div class="skel-line" style="width:${70 + Math.random()*25|0}%"></div>
+        <div class="skel-line" style="width:${30 + Math.random()*20|0}%"></div>
+      </div>
+    </div>`;
+  }
+}
+
+async function fetchMeta(videoId) {
+  try {
+    const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent('https://noembed.com/embed?url=https://www.youtube.com/watch?v=' + videoId)}`);
+    const d = await r.json();
+    return { title: d.title || 'Unknown', author: d.author_name || '', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
+  } catch {
+    return { title: 'Video ' + videoId, author: '', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
+  }
+}
+
+async function doSearch() {
+  const q = $('q').value.trim();
+  if (!q) return;
+  setStatus('Searching…', true);
+  showSkeletons();
+
+  try {
+    const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%3D%3D`;
+    const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent(ytUrl)}`);
+    if (!r.ok) throw new Error('Proxy error ' + r.status);
+    const html = await r.text();
+
+    const ids = [];
+    const re = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      if (!ids.includes(m[1])) ids.push(m[1]);
+      if (ids.length >= 20) break;
+    }
+
+    if (!ids.length) {
+      $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-display);font-style:italic;color:var(--text3);font-size:16px;text-align:center">No results found</div>`;
+      setStatus('No results for "' + q + '"');
+      return;
+    }
+
+    setStatus(`Loading ${ids.length} results…`, true);
+    const metas = await Promise.all(ids.map(id => fetchMeta(id).then(m => ({ id, ...m }))));
+    queue = metas;
+
+    const list = $('results-list');
+    list.innerHTML = '';
+    queue.forEach((item, i) => {
+      const div = document.createElement('div');
+      div.className = 'r-item';
+      div.innerHTML = `
+        <span class="r-num">${String(i + 1).padStart(2, '0')}</span>
+        <img class="r-thumb" src="${esc(item.thumb)}" alt="" loading="lazy" onerror="this.style.opacity='0'" />
+        <div class="r-info">
+          <div class="r-title">${esc(item.title)}</div>
+          <div class="r-ch">${esc(item.author)}</div>
+        </div>
+        <div class="bars"><span></span><span></span><span></span></div>`;
+      div.addEventListener('click', () => loadAndPlay(i));
+      list.appendChild(div);
+    });
+
+    setStatus(`${queue.length} tracks for "${q}"`);
+  } catch(e) {
+    $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-mono);color:var(--text3);font-size:11px;text-align:center">Search failed.<br/>Is the proxy running?</div>`;
+    setStatus('Search error — check proxy connection.');
+  }
+}
+
+// ── Event listeners ──
+$('searchBtn').addEventListener('click', doSearch);
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+$('ppBtn').addEventListener('click', () => {
+  if (!player) return;
+  playing ? player.pauseVideo() : player.playVideo();
+});
+$('prevBtn').addEventListener('click', () => { if (curIdx > 0) loadAndPlay(curIdx - 1); });
+$('nextBtn').addEventListener('click', () => { if (curIdx < queue.length - 1) loadAndPlay(curIdx + 1); });
+
+$('vol').addEventListener('input', e => {
+  $('volv').textContent = e.target.value + '%';
+  if (player && player.setVolume) player.setVolume(parseInt(e.target.value));
+});
+
+$('prog').addEventListener('click', e => {
+  if (!player || typeof player.getDuration !== 'function') return;
+  const rect = $('prog').getBoundingClientRect();
+  player.seekTo(((e.clientX - rect.left) / rect.width) * player.getDuration(), true);
+});
+
+// ── Keyboard shortcuts ──
+document.addEventListener('keydown', e => {
+  if (e.target === $('q')) return;
+  if (e.key === ' ') { e.preventDefault(); $('ppBtn').click(); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); $('nextBtn').click(); }
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); $('prevBtn').click(); }
+});
+
+// ── Load YT IFrame API ──
+const s = document.createElement('script');
+s.src = 'https://www.youtube.com/iframe_api';
+document.head.appendChild(s);
+
+// ── Suppress ad-blocker / doubleclick noise in console ──
+// These are YouTube's ad tracking requests blocked by uBlock/AdBlock.
+// They are harmless — video still plays. We silence them to keep DevTools clean.
+(function() {
+  const _error = console.error.bind(console);
+  const _warn  = console.warn.bind(console);
+  const NOISE = ['doubleclick', 'googlesyndication', 'ad_status', 'pagead', 'googleads'];
+  const isNoise = (...args) => args.some(a => typeof a === 'string' && NOISE.some(n => a.includes(n)));
+  console.error = (...args) => { if (!isNoise(...args)) _error(...args); };
+  console.warn  = (...args) => { if (!isNoise(...args)) _warn(...args); };
+})();
+</script>
+</body>
+</html>
