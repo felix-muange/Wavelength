@@ -828,18 +828,30 @@ const audio = new Audio();
 audio.preload = 'none';
 
 let audioCtx = null;
-function unlockAudioSession() {
-  if (audioCtx) return;
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const src = audioCtx.createMediaElementSource(audio);
-    src.connect(audioCtx.destination);
-    const buf = audioCtx.createBuffer(1, 1, 22050);
-    const silent = audioCtx.createBufferSource();
-    silent.buffer = buf;
-    silent.connect(audioCtx.destination);
-    silent.start(0);
-  } catch(e) {}
+// ──────────────────────────────────
+//  Unlock audio session (iOS)
+// ──────────────────────────────────
+async function unlockAudioSession() {
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const src = audioCtx.createMediaElementSource(audio);
+      src.connect(audioCtx.destination);
+    } catch (e) {
+      console.warn('AudioContext error:', e);
+      return;
+    }
+  }
+  // Always resume – required on iOS after a page visibility change
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+  }
+  // Also play a silent buffer to fully unlock the audio session
+  const buf = audioCtx.createBuffer(1, 1, 22050);
+  const silent = audioCtx.createBufferSource();
+  silent.buffer = buf;
+  silent.connect(audioCtx.destination);
+  silent.start(0);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -962,53 +974,52 @@ function setPP(isP) {
 // ════════════════════════════════════════════════════════════
 //  PLAYBACK LOGIC (iOS SAFE, plays only selected track)
 // ════════════════════════════════════════════════════════════
+// ──────────────────────────────────
+//  Play a track (iOS‑safe)
+// ──────────────────────────────────
 function loadAndPlay(idx) {
   if (idx < 0 || idx >= queue.length) return;
   curIdx = idx;
   const item = queue[idx];
 
-  // Update UI
-  document.querySelectorAll('.r-item').forEach((el,i) => el.classList.toggle('active', i===idx));
+  document.querySelectorAll('.r-item').forEach((el, i) =>
+    el.classList.toggle('active', i === idx));
   $('np-title').textContent = item.title;
   $('np-ch').textContent = item.author || '';
   setStatus(`Loading — ${item.title}`, true);
 
-  // iOS audio session unlock
-  unlockAudioSession();
+  // iOS: unlock audio and capture user gesture synchronously
+  unlockAudioSession().then(() => {
+    if (!audio.paused) audio.pause();
+    const playPromise = audio.play();          // capture gesture NOW
 
-  // Pause any previous playback
-  if (!audio.paused) audio.pause();
+    const streamUrl = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
+    audio.src = streamUrl;
+    audio.load();
 
-  // Call play() synchronously while still in the user gesture (if triggered by click)
-  const playPromise = audio.play();
-
-  // Set the stream URL **after** calling play() so iOS keeps the user gesture
-  const streamUrl = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
-  audio.src = streamUrl;
-  audio.load();
-
-  if (playPromise !== undefined) {
-    playPromise.then(() => {
-      setPP(true);
-      startProg();
-      updateMediaSession(item);
-      setStatus(`Playing — ${item.title}`);
-      const cover = $('cover-img');
-      if (cover && item.thumb) {
-        cover.src = item.thumb;
-        cover.style.opacity = '0.7';
-      }
-    }).catch(err => {
-      if (err.name === 'NotAllowedError') {
-        setStatus(`Tap play to continue — ${item.title}`);
-        setPP(false);
-      } else {
-        console.warn('Play error:', err);
-        setStatus('Playback error.');
-        setPP(false);
-      }
-    });
-  }
+    if (playPromise !== undefined) {
+      playPromise.then(() => {
+        setPP(true);
+        startProg();
+        updateMediaSession(item);
+        setStatus(`Playing — ${item.title}`);
+        const cover = $('cover-img');
+        if (cover && item.thumb) {
+          cover.src = item.thumb;
+          cover.style.opacity = '0.7';
+        }
+      }).catch(err => {
+        console.error('Playback error:', err.name, err.message);  // log details
+        if (err.name === 'NotAllowedError') {
+          setStatus('Tap play to continue — ' + item.title);
+          setPP(false);
+        } else {
+          setStatus('Playback error: ' + (err.message || 'unknown'));
+          setPP(false);
+        }
+      });
+    }
+  });
 }
 
 // ════════════════════════════════════════════════════════════
