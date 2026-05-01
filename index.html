@@ -799,38 +799,55 @@
   }
 </script>
 
+<!-- ── Full App Logic (with background keep-alive) ── -->
 <script>
 'use strict';
 
-// ════════════════════════════════════════════════════════════
-//  PROXY AUTO‑DETECTION
-// ════════════════════════════════════════════════════════════
 const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
   ? `http://${location.hostname}:3001`
   : '';
-
-// ════════════════════════════════════════════════════════════
-//  DOM HELPERS
-// ════════════════════════════════════════════════════════════
 const $ = id => document.getElementById(id);
 
-// ════════════════════════════════════════════════════════════
-//  GLOBAL STATE
-// ════════════════════════════════════════════════════════════
 let queue = [], curIdx = -1, progTimer = null, playing = false;
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-// ════════════════════════════════════════════════════════════
-//  AUDIO ELEMENT (iOS‑safe)
-// ════════════════════════════════════════════════════════════
+// ── Audio element ──
 const audio = new Audio();
 audio.preload = 'none';
 
-let audioCtx = null;
-// ──────────────────────────────────
-//  Unlock audio session (iOS)
-// ──────────────────────────────────
+// ── Web Audio for silent keep-alive ──
+let audioCtx = null, silentOsc = null, silentGain = null;
+
+function startSilentKeepAlive() {
+  if (!audioCtx) return;
+  if (silentOsc) return; // already running
+  try {
+    silentOsc = audioCtx.createOscillator();
+    silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0.0001; // inaudible
+    silentOsc.connect(silentGain);
+    silentGain.connect(audioCtx.destination);
+    silentOsc.type = 'sine';
+    silentOsc.frequency.value = 440;
+    silentOsc.start(0);
+  } catch (e) {
+    console.warn('Silent oscillator error:', e);
+  }
+}
+
+function stopSilentKeepAlive() {
+  if (silentOsc) {
+    try { silentOsc.stop(); } catch(e) {}
+    silentOsc.disconnect();
+    silentOsc = null;
+  }
+  if (silentGain) {
+    silentGain.disconnect();
+    silentGain = null;
+  }
+}
+
 async function unlockAudioSession() {
   if (!audioCtx) {
     try {
@@ -842,21 +859,39 @@ async function unlockAudioSession() {
       return;
     }
   }
-  // Always resume – required on iOS after a page visibility change
   if (audioCtx.state === 'suspended') {
     await audioCtx.resume();
   }
-  // Also play a silent buffer to fully unlock the audio session
+  // Play a tiny silent buffer to fully unlock
   const buf = audioCtx.createBuffer(1, 1, 22050);
-  const silent = audioCtx.createBufferSource();
-  silent.buffer = buf;
-  silent.connect(audioCtx.destination);
-  silent.start(0);
+  const source = audioCtx.createBufferSource();
+  source.buffer = buf;
+  source.connect(audioCtx.destination);
+  source.start(0);
 }
 
-// ════════════════════════════════════════════════════════════
-//  UTILITY FUNCTIONS
-// ════════════════════════════════════════════════════════════
+// ── Page visibility: keep audio alive in background ──
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    // Page hidden (screen lock / switch app) – start silent oscillator if music is playing
+    if (playing) {
+      startSilentKeepAlive();
+    }
+  } else {
+    // Page visible again – stop silent oscillator to save battery
+    stopSilentKeepAlive();
+    // Refresh progress display after returning
+    if (playing && !isNaN(audio.duration)) {
+      const pf = $('prog-fill'), tc = $('tc'), td = $('td');
+      const pct = (audio.currentTime / audio.duration) * 100;
+      if (pf) pf.style.width = pct + '%';
+      if (tc) tc.textContent = fmt(audio.currentTime);
+      if (td) td.textContent = fmt(audio.duration);
+    }
+  }
+});
+
+// ── Utility functions ──
 function fmt(s) {
   if (isNaN(s) || s < 0) return '0:00';
   const m = Math.floor(s / 60), sec = Math.floor(s % 60);
@@ -871,16 +906,13 @@ function setStatus(msg, loading = false) {
   el.innerHTML = loading ? `<span class="spin"></span> ${msg}` : msg;
 }
 
-// ════════════════════════════════════════════════════════════
-//  SIDEBAR / QUEUE TOGGLE
-// ════════════════════════════════════════════════════════════
+// ── Sidebar / queue toggle ──
 const isMobileMQ = window.matchMedia('(max-width: 899px)');
 let isMobile = isMobileMQ.matches;
 isMobileMQ.addEventListener('change', e => {
   isMobile = e.matches;
   if (!isMobile) { closeSidebar(); document.body.style.overflow = ''; }
 });
-
 function openSidebar() {
   $('sidebar').classList.add('open');
   $('sidebar-backdrop').classList.add('active');
@@ -894,11 +926,9 @@ function closeSidebar() {
 function toggleSidebar() {
   $('sidebar').classList.contains('open') ? closeSidebar() : openSidebar();
 }
-
 document.querySelector('.sidebar-close').addEventListener('click', closeSidebar);
 $('sidebar-backdrop').addEventListener('click', closeSidebar);
 $('queueToggle').addEventListener('click', toggleSidebar);
-
 function updateQueueBadge() {
   const badge = $('queueCount');
   const count = queue.length;
@@ -906,97 +936,69 @@ function updateQueueBadge() {
   if (count > 0) badge.textContent = count;
 }
 
-// ════════════════════════════════════════════════════════════
-//  PROXY HEALTH CHECK
-// ════════════════════════════════════════════════════════════
+// ── Proxy health ──
 async function checkProxy() {
   try {
     const r = await fetch(`${PROXY}/health`, { signal: AbortSignal.timeout(3000) });
     const d = await r.json();
-    if (d.status === 'ok') {
-      $('proxyDot').className = 'dot ok';
-      $('proxyLabel').textContent = 'proxy ok';
-    } else { proxyErr(); }
+    if (d.status === 'ok') { $('proxyDot').className = 'dot ok'; $('proxyLabel').textContent = 'proxy ok'; }
+    else proxyErr();
   } catch { proxyErr(); }
 }
-function proxyErr() {
-  $('proxyDot').className = 'dot err';
-  $('proxyLabel').textContent = 'proxy down';
-  setStatus('Proxy offline — check backend');
-}
-checkProxy();
-setInterval(checkProxy, 15000);
+function proxyErr() { $('proxyDot').className = 'dot err'; $('proxyLabel').textContent = 'proxy down'; setStatus('Proxy offline'); }
+checkProxy(); setInterval(checkProxy, 15000);
 
-// ════════════════════════════════════════════════════════════
-//  MEDIA SESSION
-// ════════════════════════════════════════════════════════════
+// ── Media Session ──
 function updateMediaSession(item) {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.metadata = new MediaMetadata({
     title: item.title || 'Unknown',
     artist: item.author || 'Wavelength',
     album: 'Wavelength Queue',
-    artwork: [
-      { src: item.thumb || '/icon.svg', sizes: '512x512', type: 'image/png' }
-    ]
+    artwork: [{ src: item.thumb || '/icon.svg', sizes: '512x512', type: 'image/png' }]
   });
-  navigator.mediaSession.setActionHandler('play',     () => audio.play());
-  navigator.mediaSession.setActionHandler('pause',    () => audio.pause());
-  // No previous/next handlers – we only play the selected track
+  navigator.mediaSession.setActionHandler('play', () => audio.play());
+  navigator.mediaSession.setActionHandler('pause', () => audio.pause());
 }
 
-// ════════════════════════════════════════════════════════════
-//  PROGRESS BAR
-// ════════════════════════════════════════════════════════════
+// ── Progress ──
 function startProg() {
   clearInterval(progTimer);
   progTimer = setInterval(() => {
     if (isNaN(audio.duration)) return;
     const pct = (audio.currentTime / audio.duration) * 100;
-    const pf = $('prog-fill'), tc = $('tc'), td = $('td');
-    if (pf) pf.style.width = pct + '%';
-    if (tc) tc.textContent = fmt(audio.currentTime);
-    if (td) td.textContent = fmt(audio.duration);
+    $('prog-fill').style.width = pct + '%';
+    $('tc').textContent = fmt(audio.currentTime);
+    $('td').textContent = fmt(audio.duration);
   }, 800);
 }
-
 function setPP(isP) {
   playing = isP;
-  const pi = $('playIcon'), pa = $('pauseIcon');
-  if (pi) pi.style.display = isP ? 'none' : '';
-  if (pa) pa.style.display = isP ? '' : 'none';
+  $('playIcon').style.display = isP ? 'none' : '';
+  $('pauseIcon').style.display = isP ? '' : 'none';
   document.querySelectorAll('.r-item').forEach((el,i) => {
     const bars = el.querySelector('.bars');
     if (bars) bars.style.animationPlayState = (i === curIdx && isP) ? 'running' : 'paused';
   });
+  // Manage silent keep-alive based on visibility
+  if (isP && document.hidden) startSilentKeepAlive();
+  else if (!isP) stopSilentKeepAlive();
 }
 
-// ════════════════════════════════════════════════════════════
-//  PLAYBACK LOGIC (iOS SAFE, plays only selected track)
-// ════════════════════════════════════════════════════════════
-// ──────────────────────────────────
-//  Play a track (iOS‑safe)
-// ──────────────────────────────────
+// ── Playback (iOS safe) ──
 function loadAndPlay(idx) {
   if (idx < 0 || idx >= queue.length) return;
   curIdx = idx;
   const item = queue[idx];
-
-  document.querySelectorAll('.r-item').forEach((el, i) =>
-    el.classList.toggle('active', i === idx));
+  document.querySelectorAll('.r-item').forEach((el,i) => el.classList.toggle('active', i===idx));
   $('np-title').textContent = item.title;
   $('np-ch').textContent = item.author || '';
   setStatus(`Loading — ${item.title}`, true);
-
-  // iOS: unlock audio and capture user gesture synchronously
   unlockAudioSession().then(() => {
     if (!audio.paused) audio.pause();
-    const playPromise = audio.play();          // capture gesture NOW
-
-    const streamUrl = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
-    audio.src = streamUrl;
+    const playPromise = audio.play();
+    audio.src = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
     audio.load();
-
     if (playPromise !== undefined) {
       playPromise.then(() => {
         setPP(true);
@@ -1009,148 +1011,120 @@ function loadAndPlay(idx) {
           cover.style.opacity = '0.7';
         }
       }).catch(err => {
-        console.error('Playback error:', err.name, err.message);  // log details
-        if (err.name === 'NotAllowedError') {
-          setStatus('Tap play to continue — ' + item.title);
-          setPP(false);
-        } else {
-          setStatus('Playback error: ' + (err.message || 'unknown'));
-          setPP(false);
-        }
+        console.error('Playback error:', err);
+        setStatus('Playback error');
+        setPP(false);
       });
     }
   });
 }
 
-// ════════════════════════════════════════════════════════════
-//  SEARCH FUNCTIONS  (No prefetch, no auto‑advance)
-// ════════════════════════════════════════════════════════════
+// ── Search ──
 function showSkeletons() {
   const list = $('results-list');
   list.innerHTML = '';
-  for (let i = 0; i < 6; i++) {
+  for (let i=0; i<6; i++) {
     list.innerHTML += `<div class="skel"><div class="skel-thumb"></div><div class="skel-lines"><div class="skel-line" style="width:${70+Math.random()*25|0}%"></div><div class="skel-line" style="width:${30+Math.random()*20|0}%"></div></div></div>`;
   }
 }
-
 async function fetchMeta(videoId) {
   try {
-    const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent('https://noembed.com/embed?url=https://www.youtube.com/watch?v=' + videoId)}`);
+    const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent('https://noembed.com/embed?url=https://www.youtube.com/watch?v='+videoId)}`);
     const d = await r.json();
-    return { title: d.title || 'Unknown', author: d.author_name || '', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
+    return { title: d.title||'Unknown', author: d.author_name||'', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
   } catch {
-    return { title: 'Video ' + videoId, author: '', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
+    return { title: 'Video '+videoId, author:'', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
   }
 }
-
 async function doSearch() {
   const q = $('q').value.trim();
   if (!q) return;
   setStatus('Searching…', true);
   showSkeletons();
   if (isMobile) openSidebar();
-
   try {
     const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%3D%3D`;
     const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent(ytUrl)}`);
-    if (!r.ok) throw new Error('Proxy error ' + r.status);
+    if (!r.ok) throw new Error('Proxy error '+r.status);
     const html = await r.text();
     const ids = [], re = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
     let m;
-    while ((m = re.exec(html)) !== null) { if (!ids.includes(m[1])) ids.push(m[1]); if (ids.length >= 20) break; }
+    while ((m=re.exec(html))!==null) { if (!ids.includes(m[1])) ids.push(m[1]); if (ids.length>=20) break; }
     if (!ids.length) {
       $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-display);font-style:italic;color:var(--text3);font-size:clamp(14px,2.5vw,16px);text-align:center">No results found</div>`;
-      setStatus('No results for "' + q + '"');
+      setStatus('No results');
       updateQueueBadge();
       return;
     }
     setStatus(`Loading ${ids.length} results…`, true);
-    const metas = await Promise.all(ids.map(id => fetchMeta(id).then(m => ({ id, ...m }))));
+    const metas = await Promise.all(ids.map(id => fetchMeta(id).then(m => ({id,...m}))));
     queue = metas;
     updateQueueBadge();
     const list = $('results-list');
     list.innerHTML = '';
-    queue.forEach((item, i) => {
+    queue.forEach((item,i) => {
       const div = document.createElement('div');
       div.className = 'r-item';
       div.innerHTML = `<span class="r-num">${String(i+1).padStart(2,'0')}</span><img class="r-thumb" src="${esc(item.thumb)}" alt="" loading="lazy" onerror="this.style.opacity='0'" /><div class="r-info"><div class="r-title">${esc(item.title)}</div><div class="r-ch">${esc(item.author)}</div></div><div class="bars"><span></span><span></span><span></span></div>`;
-      div.addEventListener('click', () => {
-        loadAndPlay(i);
-        if (isMobile) closeSidebar();
-      });
+      div.addEventListener('click', () => { loadAndPlay(i); if (isMobile) closeSidebar(); });
       list.appendChild(div);
     });
-    setStatus(`${queue.length} tracks for "${q}" — select one to play`);
-  } catch (e) {
+    setStatus(`${queue.length} tracks — select one to play`);
+  } catch(e) {
     $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-mono);color:var(--text3);font-size:clamp(10px,1.5vw,11px);text-align:center">Search failed.<br/>Is the proxy running?</div>`;
-    setStatus('Search error — check proxy.');
+    setStatus('Search error');
     updateQueueBadge();
   }
 }
 
-// ════════════════════════════════════════════════════════════
-//  EVENT LISTENERS (Controls)
-// ════════════════════════════════════════════════════════════
+// ── Event listeners ──
 $('searchBtn').addEventListener('click', doSearch);
-$('q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
-
+$('q').addEventListener('keydown', e => { if (e.key==='Enter') doSearch(); });
 $('ppBtn').addEventListener('click', () => {
   if (!audio.src || !queue.length) return;
   unlockAudioSession();
-  if (audio.paused) {
-    audio.play().then(() => setPP(true)).catch(() => {});
-  } else {
-    audio.pause(); setPP(false);
-  }
+  if (audio.paused) audio.play().then(() => setPP(true)).catch(() => {});
+  else { audio.pause(); setPP(false); }
 });
-
-// Previous / Next buttons now do nothing (no auto‑advance)
 $('prevBtn').addEventListener('click', () => {});
 $('nextBtn').addEventListener('click', () => {});
-
 $('vol').addEventListener('input', e => {
-  audio.volume = parseInt(e.target.value) / 100;
+  audio.volume = parseInt(e.target.value)/100;
   $('volv').textContent = e.target.value + '%';
 });
-
-// Progress bar seek
 const progEl = $('prog');
 if (progEl) {
   const seek = e => {
     if (isNaN(audio.duration)) return;
     const rect = progEl.getBoundingClientRect();
     const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
-    audio.currentTime = Math.max(0, Math.min(1, x / rect.width)) * audio.duration;
+    audio.currentTime = Math.max(0, Math.min(1, x/rect.width)) * audio.duration;
   };
   progEl.addEventListener('click', seek);
   progEl.addEventListener('touchend', e => { e.preventDefault(); seek(e); }, { passive: false });
 }
-
-// Keyboard shortcuts
 document.addEventListener('keydown', e => {
-  if (e.target === $('q')) return;
-  if (e.key === ' ')          { e.preventDefault(); $('ppBtn').click(); }
-  // Arrow keys disabled since we don't auto‑advance
-  if (e.key === 'Escape')      closeSidebar();
+  if (e.target===$('q')) return;
+  if (e.key===' ') { e.preventDefault(); $('ppBtn').click(); }
+  if (e.key==='Escape') closeSidebar();
 });
 
-// ════════════════════════════════════════════════════════════
-//  AUDIO ELEMENT EVENTS (no auto‑advance)
-// ════════════════════════════════════════════════════════════
 audio.addEventListener('ended', () => {
-  // Song finished — just stop
   setPP(false);
   clearInterval(progTimer);
+  stopSilentKeepAlive();
   setStatus('Finished');
 });
 audio.addEventListener('error', () => {
   setStatus('Audio stream error');
   setPP(false);
+  stopSilentKeepAlive();
 });
-audio.addEventListener('pause', () => setPP(false));
-audio.addEventListener('play',  () => {
+audio.addEventListener('pause', () => { setPP(false); stopSilentKeepAlive(); });
+audio.addEventListener('play', () => {
   setPP(true);
   startProg();
+  if (document.hidden) startSilentKeepAlive();
 });
 
 updateQueueBadge();
