@@ -1,110 +1,298 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Wavelength</title>
-    <link rel="manifest" href="/manifest.json">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="apple-touch-icon" href="/icon.svg">
+    
+    <!-- PWA / Mobile Meta -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#0a0a0c" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,400&family=DM+Mono&display=swap" rel="stylesheet" />
+
     <style>
-        :root { --bg:#0a0a0c; --gold:#c9a96e; --safe-top:env(safe-area-inset-top, 20px); }
-        body { margin:0; background:var(--bg); color:#fff; font-family:sans-serif; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
-        header { padding: calc(var(--safe-top) + 10px) 15px 15px; display:flex; gap:10px; border-bottom:1px solid rgba(255,255,255,0.1); }
-        .search-wrap { flex:1; display:flex; background:#18181e; border-radius:8px; padding:2px 10px; }
-        input { flex:1; background:none; border:none; color:#fff; padding:10px; font-size:16px; outline:none; }
-        #main { flex:1; position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
-        #cover { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0.3; }
-        .play-btn { width:80px; height:80px; border-radius:50%; border:1px solid var(--gold); color:var(--gold); background:none; font-size:30px; cursor:pointer; position:relative; z-index:2; }
-        #sidebar { position:fixed; right:0; top:0; bottom:0; width:85%; background:#111; transform:translateX(100%); transition:0.3s; z-index:100; overflow-y:auto; padding-top:var(--safe-top); }
-        #sidebar.open { transform:translateX(0); }
-        .item { padding:15px; border-bottom:1px solid #222; display:flex; align-items:center; gap:12px; cursor:pointer; }
+        :root {
+            --bg: #0a0a0c; 
+            --bg-elevated: #16161a;
+            --gold: #c9a96e; 
+            --line: rgba(255, 255, 255, 0.08);
+            --safe-top: env(safe-area-inset-top, 20px);
+            --safe-bottom: env(safe-area-inset-bottom, 20px);
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        
+        body, html { 
+            margin: 0; padding: 0; height: 100%; 
+            background: var(--bg); color: #fff; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden; 
+        }
+
+        #app {
+            display: flex; flex-direction: column; height: 100dvh; width: 100%;
+        }
+
+        /* Header logic with Notch support */
+        header {
+            padding: calc(var(--safe-top) + 10px) 15px 15px;
+            display: flex; align-items: center; gap: 12px;
+            border-bottom: 1px solid var(--line); background: var(--bg);
+            z-index: 100;
+        }
+
+        .search-wrap { 
+            flex: 1; display: flex; background: var(--bg-elevated); 
+            border-radius: 10px; border: 1px solid var(--line); padding: 2px 8px; 
+        }
+        
+        input { 
+            flex: 1; background: transparent; border: none; color: #fff; 
+            padding: 10px; font-size: 16px; outline: none; 
+        }
+
+        button.ui-btn { 
+            background: none; border: none; color: var(--gold); 
+            font-weight: bold; cursor: pointer; font-size: 14px; 
+        }
+
+        #menuBtn {
+            width: 44px; height: 44px; background: var(--bg-elevated);
+            border: 1px solid var(--line); border-radius: 10px;
+            display: flex; align-items: center; justify-content: center; color: var(--gold);
+        }
+
+        /* Main Player Section */
+        #main-view {
+            flex: 1; position: relative; overflow: hidden; background: #000;
+            display: flex; flex-direction: column;
+        }
+
+        #cover-img { 
+            position: absolute; inset: 0; width: 100%; height: 100%; 
+            object-fit: cover; opacity: 0.35; transition: opacity 0.8s ease;
+        }
+
+        #player-ui {
+            position: relative; z-index: 5; flex: 1;
+            display: flex; flex-direction: column; justify-content: flex-end;
+            padding: 40px 30px calc(var(--safe-bottom) + 40px);
+            background: linear-gradient(to top, var(--bg) 30%, transparent 100%);
+        }
+
+        .track-info { text-align: center; margin-bottom: 30px; }
+        .track-title { font-family: 'Cormorant Garamond', serif; font-size: 28px; margin-bottom: 4px; }
+        .track-author { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--gold); letter-spacing: 1px; text-transform: uppercase; }
+
+        /* Progress Bar */
+        #progress-container { width: 100%; height: 20px; display: flex; align-items: center; margin-bottom: 20px; }
+        #progress-bg { width: 100%; height: 2px; background: rgba(255,255,255,0.1); border-radius: 2px; position: relative; }
+        #progress-fill { height: 100%; background: var(--gold); width: 0%; border-radius: 2px; transition: width 0.1s linear; }
+
+        /* Controls */
+        .controls-row { display: flex; align-items: center; justify-content: center; gap: 40px; }
+        .play-btn { 
+            width: 72px; height: 72px; border-radius: 50%; border: 1px solid var(--gold); 
+            display: flex; align-items: center; justify-content: center; 
+            background: rgba(201, 169, 110, 0.05); color: var(--gold); font-size: 24px;
+        }
+        .nav-btn { background: none; border: none; color: #fff; font-size: 28px; opacity: 0.8; }
+
+        /* Sidebar & Queue */
+        #sidebar-backdrop { 
+            position: fixed; inset: 0; background: rgba(0,0,0,0.8); 
+            opacity: 0; pointer-events: none; transition: 0.3s; z-index: 200; 
+        }
+        #sidebar-backdrop.active { opacity: 1; pointer-events: auto; }
+
+        #sidebar {
+            position: fixed; top: 0; right: 0; bottom: 0; width: 85%; max-width: 360px;
+            background: var(--bg-elevated); z-index: 300; 
+            transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex; flex-direction: column; padding-top: var(--safe-top);
+        }
+        #sidebar.open { transform: translateX(0); }
+
+        #queue-header { padding: 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+        #queue-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        
+        .q-item { 
+            display: flex; align-items: center; gap: 12px; padding: 15px; 
+            border-bottom: 1px solid var(--line); cursor: pointer;
+        }
+        .q-item:active { background: rgba(255,255,255,0.05); }
+        .q-thumb { width: 50px; height: 35px; object-fit: cover; border-radius: 4px; background: #000; }
+        .q-details { flex: 1; overflow: hidden; }
+        .q-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .q-meta { font-size: 10px; color: var(--gold); margin-top: 2px; }
+
     </style>
 </head>
 <body>
 
-<header>
-    <div class="search-wrap">
-        <input type="text" id="q" placeholder="Search track..." autocomplete="off">
-        <button id="searchBtn" style="background:none; border:none; color:var(--gold); font-weight:bold;">GO</button>
-    </div>
-    <button id="menuBtn" style="background:none; border:none; color:var(--gold); font-size:24px;">☰</button>
-</header>
+<div id="app">
+    <header>
+        <div class="search-wrap">
+            <input type="text" id="q" placeholder="Search track..." autocomplete="off" />
+            <button class="ui-btn" id="searchBtn">GO</button>
+        </div>
+        <button id="menuBtn">☰</button>
+    </header>
 
-<div id="main">
-    <img id="cover" src="">
-    <div style="position:relative; z-index:2;">
-        <div id="title" style="font-size:22px; margin-bottom:5px;">Wavelength</div>
-        <div id="author" style="font-size:10px; color:var(--gold); text-transform:uppercase;">Ready</div>
-        <button class="play-btn" id="pp">▶</button>
-    </div>
-</div>
+    <main id="main-view">
+        <img id="cover-img" src="" alt="" />
+        <div id="player-ui">
+            <div class="track-info">
+                <div class="track-title" id="np-title">Wavelength</div>
+                <div class="track-author" id="np-author">System Ready</div>
+            </div>
 
-<div id="sidebar">
-    <div style="padding:20px; display:flex; justify-content:space-between; border-bottom:1px solid var(--gold);">
-        <span>QUEUE</span> <button id="close" style="color:#fff; background:none; border:none;">✕</button>
-    </div>
-    <div id="list"></div>
+            <div id="progress-container">
+                <div id="progress-bg"><div id="progress-fill"></div></div>
+            </div>
+
+            <div class="controls-row">
+                <button class="nav-btn" id="prevBtn">⏮</button>
+                <button class="play-btn" id="ppBtn">▶</button>
+                <button class="nav-btn" id="nextBtn">⏭</button>
+            </div>
+        </div>
+    </main>
+
+    <div id="sidebar-backdrop"></div>
+    <aside id="sidebar">
+        <div id="queue-header">
+            <span style="letter-spacing: 2px; color: var(--gold); font-size: 12px; font-weight: bold;">QUEUE</span>
+            <button id="closeBtn" style="background:none; border:none; color:#fff; font-size: 20px;">✕</button>
+        </div>
+        <div id="queue-list"></div>
+    </aside>
 </div>
 
 <script>
+    const $ = id => document.getElementById(id);
     const audio = new Audio();
-    let queue = [];
+    let queue = [], curIdx = -1;
 
-    async function search() {
-        const q = document.getElementById('q').value.trim();
-        if(!q) return;
-        document.getElementById('searchBtn').innerText = "...";
+    // --- Search Logic ---
+    async function performSearch() {
+        const query = $('q').value.trim();
+        if (!query) return;
+
+        $('searchBtn').innerText = "...";
+        $('searchBtn').disabled = true;
+
         try {
-            const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%3D%3D`;
-            const r = await fetch(`/proxy?url=${encodeURIComponent(url)}`);
-            const html = await r.text();
+            const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=EgIQAQ%3D%3D`;
+            const response = await fetch(`/proxy?url=${encodeURIComponent(ytUrl)}`);
+            const html = await response.text();
             
-            // FIX: Set filters out duplicate IDs
-            const ids = [...new Set([...html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g)].map(m=>m[1]))].slice(0,15);
+            const ids = [...html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g)].map(m => m[1]).slice(0, 15);
             
-            queue = ids.map(id => ({id, title:'Loading...', thumb:`https://i.ytimg.com/vi/${id}/mqdefault.jpg`}));
-            render();
-            document.getElementById('sidebar').classList.add('open');
+            if (ids.length === 0) {
+                alert("No results found.");
+                return;
+            }
 
+            queue = ids.map(id => ({
+                id, 
+                title: 'Loading...', 
+                author: 'YouTube Content', 
+                thumb: `https://i.ytimg.com/vi/${id}/mqdefault.jpg`
+            }));
+
+            renderQueue();
+            openSidebar();
+
+            // Background Metadata Update
             queue.forEach(async (item, i) => {
                 try {
-                    const res = await fetch(`/proxy?url=${encodeURIComponent('https://noembed.com/embed?url=https://www.youtube.com/watch?v='+item.id)}`);
-                    const d = await res.json();
-                    queue[i].title = d.title; queue[i].author = d.author_name;
-                    render();
-                } catch(e){}
+                    const metaUrl = `https://noembed.com/embed?url=https://www.youtube.com/watch?v=${item.id}`;
+                    const metaRes = await fetch(`/proxy?url=${encodeURIComponent(metaUrl)}`);
+                    const data = await metaRes.json();
+                    queue[i].title = data.title;
+                    queue[i].author = data.author_name;
+                    renderQueue();
+                } catch (e) {}
             });
-        } finally { document.getElementById('searchBtn').innerText = "GO"; }
+
+        } catch (err) {
+            alert("Connection error. Check your backend.");
+        } finally {
+            $('searchBtn').innerText = "GO";
+            $('searchBtn').disabled = false;
+        }
     }
 
-    function render() {
-        document.getElementById('list').innerHTML = queue.map((v,i)=>`
-            <div class="item" onclick="playTrack(${i})">
-                <img src="${v.thumb}" width="50" style="border-radius:4px">
-                <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;">${v.title}</div>
-            </div>`).join('');
+    // --- Playback Logic ---
+    function playTrack(idx) {
+        if (idx < 0 || idx >= queue.length) return;
+        curIdx = idx;
+        const track = queue[idx];
+
+        $('np-title').innerText = track.title;
+        $('np-author').innerText = track.author;
+        $('cover-img').src = track.thumb;
+        $('cover-img').style.opacity = "0.4";
+
+        audio.src = `/stream?videoId=${track.id}`;
+        audio.load();
+        audio.play().catch(e => console.log("Playback blocked until interaction."));
+        
+        $('ppBtn').innerText = "⏸";
+        closeSidebar();
     }
 
-    function playTrack(i) {
-        const t = queue[i];
-        document.getElementById('title').innerText = t.title;
-        document.getElementById('author').innerText = t.author || 'YouTube';
-        document.getElementById('cover').src = t.thumb;
-        audio.src = `/stream?videoId=${t.id}`;
-        audio.play();
-        document.getElementById('pp').innerText = "⏸";
-        document.getElementById('sidebar').classList.remove('open');
+    function renderQueue() {
+        $('queue-list').innerHTML = queue.map((v, i) => `
+            <div class="q-item" onclick="playTrack(${i})">
+                <img class="q-thumb" src="${v.thumb}">
+                <div class="q-details">
+                    <div class="q-title">${v.title}</div>
+                    <div class="q-meta">${v.author}</div>
+                </div>
+            </div>
+        `).join('');
     }
 
-    document.getElementById('searchBtn').onclick = search;
-    document.getElementById('q').onkeydown = e => { if(e.key==='Enter') { search(); document.getElementById('q').blur(); } };
-    document.getElementById('menuBtn').onclick = () => document.getElementById('sidebar').classList.add('open');
-    document.getElementById('close').onclick = () => document.getElementById('sidebar').classList.remove('open');
-    document.getElementById('pp').onclick = () => { if(audio.paused) { audio.play(); document.getElementById('pp').innerText="⏸"; } else { audio.pause(); document.getElementById('pp').innerText="▶"; } };
+    // --- Sidebar Helpers ---
+    const openSidebar = () => { $('sidebar').classList.add('open'); $('sidebar-backdrop').classList.add('active'); };
+    const closeSidebar = () => { $('sidebar').classList.remove('open'); $('sidebar-backdrop').classList.remove('active'); };
 
-    if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js')); }
+    // --- Interaction Binding ---
+    $('searchBtn').onclick = performSearch;
+    $('q').onkeydown = (e) => { if (e.key === 'Enter') { performSearch(); $('q').blur(); } };
+    
+    $('menuBtn').onclick = openSidebar;
+    $('closeBtn').onclick = closeSidebar;
+    $('sidebar-backdrop').onclick = closeSidebar;
+
+    $('ppBtn').onclick = () => {
+        if (audio.paused) {
+            audio.play();
+            $('ppBtn').innerText = "⏸";
+        } else {
+            audio.pause();
+            $('ppBtn').innerText = "▶";
+        }
+    };
+
+    $('nextBtn').onclick = () => playTrack(curIdx + 1);
+    $('prevBtn').onclick = () => playTrack(curIdx - 1);
+
+    audio.ontimeupdate = () => {
+        if (!audio.duration) return;
+        const pct = (audio.currentTime / audio.duration) * 100;
+        $('progress-fill').style.width = pct + '%';
+    };
+
+    audio.onended = () => {
+        if (curIdx < queue.length - 1) playTrack(curIdx + 1);
+    };
 </script>
+
 </body>
 </html>
