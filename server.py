@@ -8,15 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from yt_dlp import YoutubeDL
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
 
 app = FastAPI()
 
-# Allow all origins so your phone can talk to the server
+# Enable CORS for mobile & PWA access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -33,11 +31,20 @@ def _extract_sync(v_id):
     with YoutubeDL(YDL_OPTS) as ydl:
         try:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={v_id}", download=False)
-            formats = [f for f in info.get('formats', []) if f.get('acodec') != 'none' and f.get('url') and f.get('protocol') == 'https']
+            formats = [f for f in info.get('formats', []) if f.get('acodec') != 'none' and f.get('url')]
+            # Prioritize m4a for iOS background play stability
             formats.sort(key=lambda f: (f.get('ext') != 'm4a', -(f.get('abr') or 0)))
             best = formats[0]
-            return {'url': best['url'], 'mime': best.get('mime_type', 'audio/mp4'), 'size': best.get('filesize') or best.get('filesize_approx')}
+            return {
+                'url': best['url'], 
+                'mime': best.get('mime_type', 'audio/mp4'), 
+                'size': best.get('filesize') or best.get('filesize_approx')
+            }
         except: return None
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.get("/proxy")
 async def proxy(url: str = Query(...)):
@@ -59,7 +66,7 @@ async def stream(request: Request, videoId: str = Query(...)):
             async with session.get(info['url'], headers=headers) as r:
                 async for chunk in r.content.iter_chunked(128*1024): yield chunk
 
-    h = {'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*'}
+    h = {'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache'}
     if range_h and info['size']:
         m = re.match(r'bytes=(\d+)-(\d*)', range_h)
         if m:
@@ -72,11 +79,10 @@ async def stream(request: Request, videoId: str = Query(...)):
 @app.get("/")
 async def index(): return FileResponse("index.html")
 
-# Serve all other files (icons, manifest, etc.)
+# Serves sw.js, manifest.json, icon.svg automatically
 app.mount("/", StaticFiles(directory="."), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    # PORT is required for Railway deployment
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
