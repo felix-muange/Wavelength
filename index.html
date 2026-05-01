@@ -204,22 +204,33 @@
         }
 
         function playIdx(idx) {
-            if (idx < 0 || idx >= queue.length) return;
-            curIdx = idx;
-            const t = queue[idx];
-            $('title').innerText = t.title;
-            $('author').innerText = t.author;
-            $('cover').src = t.thumb;
-            $('blurBg').style.backgroundImage = `url(${t.thumb})`;
-            $('ppBtn').innerText = "⏸";
-            
-            audio.pause();
-            audio.src = `/stream?videoId=${t.id}`;
-            audio.play();
-            
-            // Auto-close on small screens
-            if (window.innerWidth < 1000) closeSidebar();
-        }
+    if (idx < 0 || idx >= queue.length) return;
+    curIdx = idx;
+    const t = queue[idx];
+    
+    // 1. Immediate UI feedback
+    $('title').innerText = t.title;
+    $('author').innerText = t.author;
+    $('cover').src = t.thumb;
+    $('blurBg').style.backgroundImage = `url(${t.thumb})`;
+    $('ppBtn').innerText = "⏳"; // Show loading state
+
+    // 2. CRITICAL IOS FIX: 
+    // We must reset and load() the audio object within the same execution thread as the click
+    audio.pause();
+    audio.src = `/stream?videoId=${t.id}`;
+    audio.load(); // Forces the browser to start plumbing the connection immediately
+    
+    // 3. Play returns a promise, we use it to update the icon
+    audio.play().then(() => {
+        $('ppBtn').innerText = "⏸";
+    }).catch(e => {
+        console.error("Playback failed", e);
+        $('ppBtn').innerText = "▶";
+    });
+    
+    if (window.innerWidth < 1000) closeSidebar();
+}
 
         function togglePlay() {
             if (!audio.src) return;
