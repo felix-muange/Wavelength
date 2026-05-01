@@ -799,7 +799,6 @@
   }
 </script>
 
-<!-- Full application logic: search + iOS audio playback -->
 <script>
 'use strict';
 
@@ -1064,12 +1063,30 @@ async function doSearch() {
       list.appendChild(div);
     });
     setStatus(`${queue.length} tracks for "${q}"`);
+
+    // ───── NEW: prefetch audio URLs in background ─────
+    prefetchQueue(ids);
+    // ──────────────────────────────────────────────────
+
   } catch (e) {
     $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-mono);color:var(--text3);font-size:clamp(10px,1.5vw,11px);text-align:center">Search failed.<br/>Is the proxy running?</div>`;
     setStatus('Search error — check proxy.');
     updateQueueBadge();
   }
 }
+
+// ───── Prefetch helper (called by doSearch) ─────
+async function prefetchQueue(ids) {
+  if (!ids.length) return;
+  const chunk = ids.slice(0, 20).join(',');
+  try {
+    await fetch(`${PROXY}/prefetch?ids=${encodeURIComponent(chunk)}`);
+    setStatus(`${queue.length} tracks ready — tap a song to play`);
+  } catch (e) {
+    console.warn('Prefetch failed', e);
+  }
+}
+// ─────────────────────────────────────────────────
 
 // ════════════════════════════════════════════════════════════
 //  EVENT LISTENERS (Search + Controls)
@@ -1113,7 +1130,7 @@ document.addEventListener('keydown', e => {
   if (e.key === ' ')          { e.preventDefault(); $('ppBtn').click(); }
   if (e.key === 'ArrowRight') { e.preventDefault(); $('nextBtn').click(); }
   if (e.key === 'ArrowLeft')  { e.preventDefault(); $('prevBtn').click(); }
-  if (e.key === 'Escape')     closeSidebar();
+  if (e.key === 'Escape')      closeSidebar();
 });
 
 // Audio element events

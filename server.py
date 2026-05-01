@@ -1,4 +1,5 @@
 import re
+import asyncio
 import aiohttp
 from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, Response
@@ -23,12 +24,76 @@ YDL_OPTS = {
     ),
 }
 
+# ── In‑memory cache for yt‑dlp results ──
+_audio_cache: dict[str, dict] = {}
 
+
+def _extract_audio_info(video_id: str) -> dict:
+    """Blocking extract – used by /stream and /prefetch"""
+    with YoutubeDL(YDL_OPTS) as ydl:
+        try:
+            info = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={video_id}",
+                download=False
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"yt-dlp error: {str(e)}")
+
+    formats = info.get('formats', [])
+
+    # iOS‑safe formats first (m4a/mp3/mp4, https protocol, audio‑only)
+    direct_audio = [
+        f for f in formats
+        if f.get('acodec') != 'none'
+        and f.get('vcodec') == 'none'
+        and f.get('protocol') == 'https'
+        and f.get('url')
+        and f.get('ext') in ('m4a', 'mp3', 'mp4')
+    ]
+
+    if not direct_audio:
+        direct_audio = [
+            f for f in formats
+            if f.get('acodec') != 'none'
+            and f.get('vcodec') == 'none'
+            and f.get('protocol') == 'https'
+            and f.get('url')
+        ]
+
+    if not direct_audio:
+        raise HTTPException(status_code=404, detail="No compatible audio stream found")
+
+    def format_priority(f):
+        ext = f.get('ext', '')
+        return {'m4a': 0, 'mp3': 1, 'mp4': 2}.get(ext, 9)
+
+    direct_audio.sort(key=lambda f: (format_priority(f), -(f.get('abr') or 0)))
+    best = direct_audio[0]
+
+    return {
+        'url': best['url'],
+        'ext': best.get('ext', 'mp4'),
+        'filesize': best.get('filesize') or best.get('filesize_approx'),
+        'title': info.get('title', ''),
+    }
+
+
+def get_audio_info(video_id: str) -> dict:
+    """Return cached info or extract + cache"""
+    if video_id in _audio_cache:
+        return _audio_cache[video_id]
+    info = _extract_audio_info(video_id)
+    _audio_cache[video_id] = info
+    return info
+
+
+# ─────────────────────────────────────────────────
+#  Helper functions (unchanged)
+# ─────────────────────────────────────────────────
 def is_allowed(target_url: str) -> bool:
     from urllib.parse import urlparse
     hostname = urlparse(target_url).hostname
     return any(hostname == h or hostname.endswith('.' + h) for h in ALLOWED_HOSTS)
-
 
 async def fetch_proxy_url(target_url: str) -> tuple[bytes, str]:
     if not is_allowed(target_url):
@@ -58,73 +123,12 @@ async def fetch_proxy_url(target_url: str) -> tuple[bytes, str]:
                     from urllib.parse import urljoin
                     new_url = urljoin(current_url, location)
                     if not is_allowed(new_url):
-                        raise HTTPException(
-                            status_code=403, detail="Redirect domain not allowed"
-                        )
+                        raise HTTPException(status_code=403, detail="Redirect domain not allowed")
                     current_url = new_url
                     continue
                 content = await resp.read()
                 return content, resp.content_type or 'text/plain'
     raise HTTPException(status_code=502, detail="Too many redirects")
-
-
-# ── In-memory cache for yt-dlp results ──
-_audio_cache: dict[str, dict] = {}
-
-
-def get_audio_info(video_id: str) -> dict:
-    if video_id in _audio_cache:
-        return _audio_cache[video_id]
-
-    with YoutubeDL(YDL_OPTS) as ydl:
-        try:
-            info = ydl.extract_info(
-                f"https://www.youtube.com/watch?v={video_id}",
-                download=False
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"yt-dlp error: {str(e)}")
-
-    formats = info.get('formats', [])
-
-    # iOS-safe formats first (m4a/mp3/mp4, https protocol, audio-only)
-    direct_audio = [
-        f for f in formats
-        if f.get('acodec') != 'none'
-        and f.get('vcodec') == 'none'
-        and f.get('protocol') == 'https'
-        and f.get('url')
-        and f.get('ext') in ('m4a', 'mp3', 'mp4')
-    ]
-
-    # Fallback: any direct audio-only https stream
-    if not direct_audio:
-        direct_audio = [
-            f for f in formats
-            if f.get('acodec') != 'none'
-            and f.get('vcodec') == 'none'
-            and f.get('protocol') == 'https'
-            and f.get('url')
-        ]
-
-    if not direct_audio:
-        raise HTTPException(status_code=404, detail="No compatible audio stream found")
-
-    def format_priority(f):
-        ext = f.get('ext', '')
-        return {'m4a': 0, 'mp3': 1, 'mp4': 2}.get(ext, 9)
-
-    direct_audio.sort(key=lambda f: (format_priority(f), -(f.get('abr') or 0)))
-    best = direct_audio[0]
-
-    result = {
-        'url': best['url'],
-        'ext': best.get('ext', 'mp4'),
-        'filesize': best.get('filesize') or best.get('filesize_approx'),
-        'title': info.get('title', ''),
-    }
-    _audio_cache[video_id] = result
-    return result
 
 
 CONTENT_TYPE_MAP = {
@@ -137,9 +141,8 @@ CONTENT_TYPE_MAP = {
 
 
 # ─────────────────────────────────────────────────
-#  ROUTES  (order matters in FastAPI)
+#  ROUTES
 # ─────────────────────────────────────────────────
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -149,6 +152,27 @@ async def health():
 async def proxy(url: str = Query(...)):
     content, content_type = await fetch_proxy_url(url)
     return Response(content=content, media_type=content_type)
+
+
+@app.get("/prefetch")
+async def prefetch(ids: str = Query(..., description="Comma‑separated video IDs")):
+    """Prefetch audio info for a batch of video IDs so later plays are instant."""
+    video_ids = [vid.strip() for vid in ids.split(',') if vid.strip()]
+    if not video_ids:
+        raise HTTPException(status_code=400, detail="No video IDs provided")
+    if len(video_ids) > 50:
+        video_ids = video_ids[:50]
+
+    async def run_extract(vid):
+        # Run blocking yt-dlp in a thread to avoid blocking the event loop
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, get_audio_info, vid)
+        except Exception:
+            pass  # silently ignore errors for prefetch
+
+    await asyncio.gather(*[run_extract(vid) for vid in video_ids])
+    return {"cached": len(video_ids)}
 
 
 @app.get("/stream")
@@ -162,7 +186,6 @@ async def stream(request: Request, videoId: str = Query(...)):
     filesize = info['filesize']
     content_type = CONTENT_TYPE_MAP.get(ext, 'audio/mp4')
 
-    # Parse Range header — iOS Safari always sends one
     range_header = request.headers.get('range')
     start = 0
     end = None
@@ -212,21 +235,17 @@ async def stream(request: Request, videoId: str = Query(...)):
     )
 
 
-# ── Silence Chrome DevTools probe — not a real error ──
 @app.get("/.well-known/{rest:path}")
 async def well_known(rest: str):
-    raise HTTPException(status_code=204)  # No Content, no log spam
+    raise HTTPException(status_code=204)
 
 
-# ── Serve frontend at both / and /index.html ──
-# (service worker may request /index.html directly)
 @app.get("/")
 @app.get("/index.html")
 async def serve_frontend():
     return FileResponse("index.html", media_type="text/html")
 
 
-# ── Other static files ──
 @app.get("/{filename}")
 async def static_files(filename: str):
     import os
