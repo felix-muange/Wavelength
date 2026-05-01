@@ -38,6 +38,10 @@ def _extract_sync(v_id):
             best = formats[0]
             return {'url': best['url'], 'mime': best.get('mime_type', 'audio/mp4'), 'size': best.get('filesize') or best.get('filesize_approx')}
         except: return None
+# ── Routes ──
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.get("/proxy")
 async def proxy(url: str = Query(...)):
