@@ -1,36 +1,32 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Wavelength</title>
     <link rel="manifest" href="/manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <link rel="apple-touch-icon" href="/icon.svg">
-    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital@1&family=DM+Mono&display=swap" rel="stylesheet" />
     <style>
-        :root { --bg:#0a0a0c; --gold:#c9a96e; --safe-top:env(safe-area-inset-top, 20px); --safe-bottom:env(safe-area-inset-bottom, 20px); }
+        :root { --bg:#0a0a0c; --gold:#c9a96e; --safe-top:env(safe-area-inset-top, 20px); }
         body { margin:0; background:var(--bg); color:#fff; font-family:sans-serif; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
         header { padding: calc(var(--safe-top) + 10px) 15px 15px; display:flex; gap:10px; border-bottom:1px solid rgba(255,255,255,0.1); }
-        .search-wrap { flex:1; display:flex; background:#18181e; border-radius:8px; border:1px solid rgba(255,255,255,0.1); padding:2px 10px; }
+        .search-wrap { flex:1; display:flex; background:#18181e; border-radius:8px; padding:2px 10px; }
         input { flex:1; background:none; border:none; color:#fff; padding:10px; font-size:16px; outline:none; }
-        #main { flex:1; position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; }
-        #cover { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0.3; z-index:1; }
-        #ui { position:relative; z-index:2; text-align:center; padding: 20px; }
-        #title { font-family:'Cormorant Garamond', serif; font-size:28px; margin-bottom:5px; }
-        #author { font-family:'DM Mono', monospace; font-size:10px; color:var(--gold); text-transform:uppercase; }
-        .play-btn { width:70px; height:70px; border-radius:50%; border:1px solid var(--gold); color:var(--gold); background:none; font-size:24px; margin-top:20px; }
+        #main { flex:1; position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+        #cover { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0.3; }
+        .play-btn { width:80px; height:80px; border-radius:50%; border:1px solid var(--gold); color:var(--gold); background:none; font-size:30px; cursor:pointer; position:relative; z-index:2; }
         #sidebar { position:fixed; right:0; top:0; bottom:0; width:85%; background:#111; transform:translateX(100%); transition:0.3s; z-index:100; overflow-y:auto; padding-top:var(--safe-top); }
         #sidebar.open { transform:translateX(0); }
-        .item { padding:15px; border-bottom:1px solid rgba(255,255,255,0.05); display:flex; align-items:center; gap:10px; }
+        .item { padding:15px; border-bottom:1px solid #222; display:flex; align-items:center; gap:12px; cursor:pointer; }
     </style>
 </head>
 <body>
 
 <header>
     <div class="search-wrap">
-        <input type="text" id="q" placeholder="Search..." autocomplete="off">
+        <input type="text" id="q" placeholder="Search track..." autocomplete="off">
         <button id="searchBtn" style="background:none; border:none; color:var(--gold); font-weight:bold;">GO</button>
     </div>
     <button id="menuBtn" style="background:none; border:none; color:var(--gold); font-size:24px;">☰</button>
@@ -38,9 +34,9 @@
 
 <div id="main">
     <img id="cover" src="">
-    <div id="ui">
-        <div id="title">Wavelength</div>
-        <div id="author">Ready</div>
+    <div style="position:relative; z-index:2;">
+        <div id="title" style="font-size:22px; margin-bottom:5px;">Wavelength</div>
+        <div id="author" style="font-size:10px; color:var(--gold); text-transform:uppercase;">Ready</div>
         <button class="play-btn" id="pp">▶</button>
     </div>
 </div>
@@ -57,22 +53,28 @@
     let queue = [];
 
     async function search() {
-        const q = document.getElementById('q').value;
+        const q = document.getElementById('q').value.trim();
         if(!q) return;
         document.getElementById('searchBtn').innerText = "...";
         try {
             const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%3D%3D`;
             const r = await fetch(`/proxy?url=${encodeURIComponent(url)}`);
             const html = await r.text();
-            const ids = [...html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g)].map(m=>m[1]).slice(0,15);
+            
+            // FIX: Set filters out duplicate IDs
+            const ids = [...new Set([...html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g)].map(m=>m[1]))].slice(0,15);
+            
             queue = ids.map(id => ({id, title:'Loading...', thumb:`https://i.ytimg.com/vi/${id}/mqdefault.jpg`}));
             render();
             document.getElementById('sidebar').classList.add('open');
+
             queue.forEach(async (item, i) => {
-                const res = await fetch(`/proxy?url=${encodeURIComponent('https://noembed.com/embed?url=https://www.youtube.com/watch?v='+item.id)}`);
-                const d = await res.json();
-                queue[i].title = d.title; queue[i].author = d.author_name;
-                render();
+                try {
+                    const res = await fetch(`/proxy?url=${encodeURIComponent('https://noembed.com/embed?url=https://www.youtube.com/watch?v='+item.id)}`);
+                    const d = await res.json();
+                    queue[i].title = d.title; queue[i].author = d.author_name;
+                    render();
+                } catch(e){}
             });
         } finally { document.getElementById('searchBtn').innerText = "GO"; }
     }
@@ -80,15 +82,15 @@
     function render() {
         document.getElementById('list').innerHTML = queue.map((v,i)=>`
             <div class="item" onclick="playTrack(${i})">
-                <img src="${v.thumb}" width="40" height="30" style="border-radius:4px">
-                <div style="font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${v.title}</div>
+                <img src="${v.thumb}" width="50" style="border-radius:4px">
+                <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;">${v.title}</div>
             </div>`).join('');
     }
 
     function playTrack(i) {
         const t = queue[i];
         document.getElementById('title').innerText = t.title;
-        document.getElementById('author').innerText = t.author;
+        document.getElementById('author').innerText = t.author || 'YouTube';
         document.getElementById('cover').src = t.thumb;
         audio.src = `/stream?videoId=${t.id}`;
         audio.play();
@@ -102,9 +104,7 @@
     document.getElementById('close').onclick = () => document.getElementById('sidebar').classList.remove('open');
     document.getElementById('pp').onclick = () => { if(audio.paused) { audio.play(); document.getElementById('pp').innerText="⏸"; } else { audio.pause(); document.getElementById('pp').innerText="▶"; } };
 
-    if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
-    }
+    if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js')); }
 </script>
 </body>
 </html>

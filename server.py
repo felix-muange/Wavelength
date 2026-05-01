@@ -1,7 +1,4 @@
-import re
-import asyncio
-import aiohttp
-import os
+import re, asyncio, aiohttp, os
 from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 
-# Enable CORS for mobile & PWA access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,10 +17,12 @@ app.add_middleware(
 
 executor = ThreadPoolExecutor(max_workers=10)
 
+# Critical: Use 'ios' player client to bypass "Sign in to confirm you're not a bot"
 YDL_OPTS = {
     'quiet': True,
-    'extract_flat': False,
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+    'no_warnings': True,
+    'format': 'bestaudio/best',
+    'extractor_args': {'youtube': {'player_client': ['ios']}},
 }
 
 def _extract_sync(v_id):
@@ -32,46 +30,46 @@ def _extract_sync(v_id):
         try:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={v_id}", download=False)
             formats = [f for f in info.get('formats', []) if f.get('acodec') != 'none' and f.get('url')]
-            # Prioritize m4a for iOS background play stability
-            formats.sort(key=lambda f: (f.get('ext') != 'm4a', -(f.get('abr') or 0)))
+            formats.sort(key=lambda f: (f.get('ext') == 'm4a', f.get('abr') or 0), reverse=True)
             best = formats[0]
             return {
                 'url': best['url'], 
-                'mime': best.get('mime_type', 'audio/mp4'), 
+                'mime': 'audio/mp4',
                 'size': best.get('filesize') or best.get('filesize_approx')
             }
-        except: return None
+        except Exception as e:
+            print(f"Extraction Error: {e}")
+            return None
 
 @app.get("/health")
-async def health():
-    return {"status": "ok"}
+async def health(): return {"status": "ok"}
 
 @app.get("/proxy")
 async def proxy(url: str = Query(...)):
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
+        headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'}
+        async with session.get(url, headers=headers) as resp:
             return Response(content=await resp.read(), media_type=resp.content_type)
 
 @app.get("/stream")
 async def stream(request: Request, videoId: str = Query(...)):
     loop = asyncio.get_event_loop()
     info = await loop.run_in_executor(executor, _extract_sync, videoId)
-    if not info: raise HTTPException(status_code=404)
+    if not info: raise HTTPException(status_code=403, detail="Blocked by YouTube")
     
     range_h = request.headers.get('range')
-    headers = {'User-Agent': YDL_OPTS['user_agent'], 'Range': range_h} if range_h else {}
+    headers = {'User-Agent': 'com.google.ios.youtube/19.29.1', 'Range': range_h} if range_h else {}
 
     async def gen():
         async with aiohttp.ClientSession() as session:
             async with session.get(info['url'], headers=headers) as r:
-                async for chunk in r.content.iter_chunked(128*1024): yield chunk
+                async for chunk in r.content.iter_chunked(256*1024): yield chunk
 
     h = {'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache'}
     if range_h and info['size']:
         m = re.match(r'bytes=(\d+)-(\d*)', range_h)
         if m:
-            start = int(m.group(1))
-            end = int(m.group(2)) if m.group(2) else info['size'] - 1
+            start, end = int(m.group(1)), (int(m.group(2)) if m.group(2) else info['size'] - 1)
             h.update({'Content-Range': f'bytes {start}-{end}/{info["size"]}', 'Content-Length': str(end-start+1)})
             return StreamingResponse(gen(), status_code=206, media_type=info['mime'], headers=h)
     return StreamingResponse(gen(), headers=h, media_type=info['mime'])
@@ -79,10 +77,8 @@ async def stream(request: Request, videoId: str = Query(...)):
 @app.get("/")
 async def index(): return FileResponse("index.html")
 
-# Serves sw.js, manifest.json, icon.svg automatically
 app.mount("/", StaticFiles(directory="."), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
