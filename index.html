@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
 <title>Wavelength</title>
 
-<!-- ── PWA Meta ── -->
+<!-- PWA Meta -->
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Wavelength" />
@@ -20,7 +20,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400&family=Syne:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
 <style>
-  /* ── exactly the same CSS as before (no changes) ── */
+  /* ── All original CSS (unchanged) ── */
   :root {
     --bg:        #0a0a0c;
     --bg2:       #111115;
@@ -792,227 +792,344 @@
   </div>
 </div>
 
-<audio id="audioPlayer" preload="none"></audio>
-
-<!-- ── PWA Service Worker Registration ── -->
+<!-- PWA Service Worker -->
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js');
   }
 </script>
 
-<!-- ── App Logic (unchanged) ── -->
+<!-- Full application logic: search + iOS audio playback -->
 <script>
-  (function() {
-    const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ?
-      `http://${location.hostname}:3001` :
-      '';
-    const $ = id => document.getElementById(id);
-    const audio = $('audioPlayer');
-    let queue = [], curIdx = -1, playing = false;
-    let isMobile = window.matchMedia('(max-width: 899px)').matches;
+'use strict';
 
-    function openSidebar() { $('sidebar').classList.add('open'); $('sidebar-backdrop').classList.add('active'); document.body.style.overflow = 'hidden'; }
-    function closeSidebar() { $('sidebar').classList.remove('open'); $('sidebar-backdrop').classList.remove('active'); if (isMobile) document.body.style.overflow = ''; }
-    function toggleSidebar() { $('sidebar').classList.contains('open') ? closeSidebar() : openSidebar(); }
-    $('sidebar-backdrop').addEventListener('click', closeSidebar);
-    document.querySelector('.sidebar-close').addEventListener('click', closeSidebar);
-    $('queueToggle').addEventListener('click', toggleSidebar);
-    const mqMobile = window.matchMedia('(max-width: 899px)');
-    mqMobile.addEventListener('change', e => {
-      isMobile = e.matches;
-      if (!isMobile) { closeSidebar(); document.body.style.overflow = ''; }
-    });
-    function updateQueueBadge() {
-      const badge = $('queueCount');
-      const count = queue.length;
-      badge.style.display = count > 0 ? 'inline-block' : 'none';
-      if (count > 0) badge.textContent = count;
-    }
-    function onTrackSelect(idx) { loadAndPlay(idx); if (isMobile) closeSidebar(); }
+// ════════════════════════════════════════════════════════════
+//  PROXY AUTO‑DETECTION
+// ════════════════════════════════════════════════════════════
+const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+  ? `http://${location.hostname}:3001`
+  : '';
 
-    async function checkProxy() {
-      try {
-        const r = await fetch(`${PROXY}/health`, { signal: AbortSignal.timeout(3000) });
-        const d = await r.json();
-        if (d.status === 'ok') { $('proxyDot').className = 'dot ok'; $('proxyLabel').textContent = 'proxy ok'; }
-        else proxyErr();
-      } catch { proxyErr(); }
-    }
-    function proxyErr() { $('proxyDot').className = 'dot err'; $('proxyLabel').textContent = 'proxy down'; setStatus('Proxy offline — run backend'); }
-    checkProxy(); setInterval(checkProxy, 15000);
+// ════════════════════════════════════════════════════════════
+//  DOM HELPERS
+// ════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
 
-    function setStatus(msg, loading = false) { $('statusMsg').innerHTML = loading ? `<span class="spin"></span> ${msg}` : msg; }
-    function fmt(s) { if (isNaN(s)||s<0) return '0:00'; const m = Math.floor(s/60), sec = Math.floor(s%60); return `${m}:${sec.toString().padStart(2,'0')}`; }
-    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// ════════════════════════════════════════════════════════════
+//  GLOBAL STATE
+// ════════════════════════════════════════════════════════════
+let queue = [], curIdx = -1, progTimer = null, playing = false;
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-    function updateMediaSession(item) {
-      if (!('mediaSession' in navigator)) return;
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: item.title || 'Unknown',
-        artist: item.author || 'Wavelength',
-        album: 'Wavelength Queue',
-        artwork: [
-          { src: item.thumb || '', sizes: '320x180', type: 'image/jpeg' },
-          { src: `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`, sizes: '480x360', type: 'image/jpeg' }
-        ]
-      });
-      navigator.mediaSession.playbackState = 'playing';
-    }
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.setActionHandler('play', () => audio.play());
-      navigator.mediaSession.setActionHandler('pause', () => audio.pause());
-      navigator.mediaSession.setActionHandler('previoustrack', () => { if (curIdx>0) loadAndPlay(curIdx-1); });
-      navigator.mediaSession.setActionHandler('nexttrack', () => { if (curIdx < queue.length-1) loadAndPlay(curIdx+1); });
-      navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime!=null) audio.currentTime = d.seekTime; });
-    }
+// ════════════════════════════════════════════════════════════
+//  AUDIO ELEMENT (iOS‑safe)
+// ════════════════════════════════════════════════════════════
+const audio = new Audio();
+audio.preload = 'none';
 
-    audio.addEventListener('play', () => {
-      playing = true;
-      $('playIcon').style.display='none'; $('pauseIcon').style.display='';
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState='playing';
-    });
-    audio.addEventListener('pause', () => {
-      playing = false;
-      $('playIcon').style.display=''; $('pauseIcon').style.display='none';
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState='paused';
-    });
-    audio.addEventListener('ended', () => {
-      if (curIdx < queue.length-1) loadAndPlay(curIdx+1);
-      else {
-        playing = false;
-        $('playIcon').style.display=''; $('pauseIcon').style.display='none';
-        if ('mediaSession' in navigator) navigator.mediaSession.playbackState='none';
+let audioCtx = null;
+function unlockAudioSession() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaElementSource(audio);
+    src.connect(audioCtx.destination);
+    const buf = audioCtx.createBuffer(1, 1, 22050);
+    const silent = audioCtx.createBufferSource();
+    silent.buffer = buf;
+    silent.connect(audioCtx.destination);
+    silent.start(0);
+  } catch(e) {}
+}
+
+// ════════════════════════════════════════════════════════════
+//  UTILITY FUNCTIONS
+// ════════════════════════════════════════════════════════════
+function fmt(s) {
+  if (isNaN(s) || s < 0) return '0:00';
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function setStatus(msg, loading = false) {
+  const el = $('statusMsg');
+  if (!el) return;
+  el.innerHTML = loading ? `<span class="spin"></span> ${msg}` : msg;
+}
+
+// ════════════════════════════════════════════════════════════
+//  SIDEBAR / QUEUE TOGGLE
+// ════════════════════════════════════════════════════════════
+const isMobileMQ = window.matchMedia('(max-width: 899px)');
+let isMobile = isMobileMQ.matches;
+isMobileMQ.addEventListener('change', e => {
+  isMobile = e.matches;
+  if (!isMobile) { closeSidebar(); document.body.style.overflow = ''; }
+});
+
+function openSidebar() {
+  $('sidebar').classList.add('open');
+  $('sidebar-backdrop').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+function closeSidebar() {
+  $('sidebar').classList.remove('open');
+  $('sidebar-backdrop').classList.remove('active');
+  if (isMobile) document.body.style.overflow = '';
+}
+function toggleSidebar() {
+  $('sidebar').classList.contains('open') ? closeSidebar() : openSidebar();
+}
+
+document.querySelector('.sidebar-close').addEventListener('click', closeSidebar);
+$('sidebar-backdrop').addEventListener('click', closeSidebar);
+$('queueToggle').addEventListener('click', toggleSidebar);
+
+function updateQueueBadge() {
+  const badge = $('queueCount');
+  const count = queue.length;
+  badge.style.display = count > 0 ? 'inline-block' : 'none';
+  if (count > 0) badge.textContent = count;
+}
+
+// ════════════════════════════════════════════════════════════
+//  PROXY HEALTH CHECK
+// ════════════════════════════════════════════════════════════
+async function checkProxy() {
+  try {
+    const r = await fetch(`${PROXY}/health`, { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      $('proxyDot').className = 'dot ok';
+      $('proxyLabel').textContent = 'proxy ok';
+    } else { proxyErr(); }
+  } catch { proxyErr(); }
+}
+function proxyErr() {
+  $('proxyDot').className = 'dot err';
+  $('proxyLabel').textContent = 'proxy down';
+  setStatus('Proxy offline — check backend');
+}
+checkProxy();
+setInterval(checkProxy, 15000);
+
+// ════════════════════════════════════════════════════════════
+//  MEDIA SESSION
+// ════════════════════════════════════════════════════════════
+function updateMediaSession(item) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: item.title || 'Unknown',
+    artist: item.author || 'Wavelength',
+    album: 'Wavelength Queue',
+    artwork: [
+      { src: item.thumb || '/icon.svg', sizes: '512x512', type: 'image/png' }
+    ]
+  });
+  navigator.mediaSession.setActionHandler('play',     () => audio.play());
+  navigator.mediaSession.setActionHandler('pause',    () => audio.pause());
+  navigator.mediaSession.setActionHandler('previoustrack', () => { if(curIdx>0) loadAndPlay(curIdx-1); });
+  navigator.mediaSession.setActionHandler('nexttrack',     () => { if(curIdx<queue.length-1) loadAndPlay(curIdx+1); });
+}
+
+// ════════════════════════════════════════════════════════════
+//  PROGRESS BAR
+// ════════════════════════════════════════════════════════════
+function startProg() {
+  clearInterval(progTimer);
+  progTimer = setInterval(() => {
+    if (isNaN(audio.duration)) return;
+    const pct = (audio.currentTime / audio.duration) * 100;
+    const pf = $('prog-fill'), tc = $('tc'), td = $('td');
+    if (pf) pf.style.width = pct + '%';
+    if (tc) tc.textContent = fmt(audio.currentTime);
+    if (td) td.textContent = fmt(audio.duration);
+  }, 800);
+}
+
+function setPP(isP) {
+  playing = isP;
+  const pi = $('playIcon'), pa = $('pauseIcon');
+  if (pi) pi.style.display = isP ? 'none' : '';
+  if (pa) pa.style.display = isP ? '' : 'none';
+  document.querySelectorAll('.r-item').forEach((el,i) => {
+    const bars = el.querySelector('.bars');
+    if (bars) bars.style.animationPlayState = (i === curIdx && isP) ? 'running' : 'paused';
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+//  PLAYBACK LOGIC (iOS SAFE)
+// ════════════════════════════════════════════════════════════
+function loadAndPlay(idx) {
+  if (idx < 0 || idx >= queue.length) return;
+  curIdx = idx;
+  const item = queue[idx];
+
+  document.querySelectorAll('.r-item').forEach((el,i) => el.classList.toggle('active', i===idx));
+  $('np-title').textContent = item.title;
+  $('np-ch').textContent = item.author || '';
+  setStatus(`Loading — ${item.title}`, true);
+
+  unlockAudioSession();
+  if (!audio.paused) audio.pause();
+  const playPromise = audio.play();
+
+  const streamUrl = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
+  audio.src = streamUrl;
+  audio.load();
+
+  if (playPromise !== undefined) {
+    playPromise.then(() => {
+      setPP(true); startProg();
+      updateMediaSession(item);
+      setStatus(`Playing — ${item.title}`);
+      const cover = $('cover-img');
+      if (cover && item.thumb) {
+        cover.src = item.thumb;
+        cover.style.opacity = '0.7';
+      }
+    }).catch(err => {
+      if (err.name === 'NotAllowedError') {
+        setStatus(`Tap play to continue — ${item.title}`);
+        setPP(false);
+      } else {
+        console.warn('Play error:', err);
+        if (curIdx < queue.length - 1) setTimeout(() => loadAndPlay(curIdx + 1), 1500);
+        else { setStatus('Playback error.'); setPP(false); }
       }
     });
-    audio.addEventListener('error', () => {
-      setStatus('Audio stream error — trying next');
-      if (curIdx < queue.length-1) setTimeout(() => loadAndPlay(curIdx+1), 2000);
-    });
-    audio.addEventListener('timeupdate', () => {
-      const pct = audio.duration ? (audio.currentTime/audio.duration)*100 : 0;
-      $('prog-fill').style.width = pct+'%';
-      $('tc').textContent = fmt(audio.currentTime);
-      $('td').textContent = fmt(audio.duration||0);
-      if ('mediaSession' in navigator && audio.duration) {
-        navigator.mediaSession.setPositionState({
-          duration: audio.duration,
-          playbackRate: audio.playbackRate||1,
-          position: audio.currentTime
-        });
-      }
-    });
+  }
+}
 
-    function loadAndPlay(idx) {
-      if (idx<0||idx>=queue.length) return;
-      curIdx = idx;
-      const it = queue[idx];
-      document.querySelectorAll('.r-item').forEach((el,i) => el.classList.toggle('active', i===idx));
-      $('np-title').textContent = it.title;
-      $('np-ch').textContent = it.author || '';
-      $('cover-img').src = it.thumb || '';
-      setStatus(`Playing — ${it.title}`);
-      updateMediaSession(it);
-      audio.src = `${PROXY}/stream?videoId=${it.id}`;
-      audio.load();
-      audio.play().catch(e => { console.warn('Play blocked:', e); setStatus('Tap play to start'); });
+// ════════════════════════════════════════════════════════════
+//  SEARCH FUNCTIONS
+// ════════════════════════════════════════════════════════════
+function showSkeletons() {
+  const list = $('results-list');
+  list.innerHTML = '';
+  for (let i = 0; i < 6; i++) {
+    list.innerHTML += `<div class="skel"><div class="skel-thumb"></div><div class="skel-lines"><div class="skel-line" style="width:${70+Math.random()*25|0}%"></div><div class="skel-line" style="width:${30+Math.random()*20|0}%"></div></div></div>`;
+  }
+}
+
+async function fetchMeta(videoId) {
+  try {
+    const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent('https://noembed.com/embed?url=https://www.youtube.com/watch?v=' + videoId)}`);
+    const d = await r.json();
+    return { title: d.title || 'Unknown', author: d.author_name || '', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
+  } catch {
+    return { title: 'Video ' + videoId, author: '', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
+  }
+}
+
+async function doSearch() {
+  const q = $('q').value.trim();
+  if (!q) return;
+  setStatus('Searching…', true);
+  showSkeletons();
+  if (isMobile) openSidebar();
+
+  try {
+    const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%3D%3D`;
+    const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent(ytUrl)}`);
+    if (!r.ok) throw new Error('Proxy error ' + r.status);
+    const html = await r.text();
+    const ids = [], re = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
+    let m;
+    while ((m = re.exec(html)) !== null) { if (!ids.includes(m[1])) ids.push(m[1]); if (ids.length >= 20) break; }
+    if (!ids.length) {
+      $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-display);font-style:italic;color:var(--text3);font-size:clamp(14px,2.5vw,16px);text-align:center">No results found</div>`;
+      setStatus('No results for "' + q + '"');
+      updateQueueBadge();
+      return;
     }
-
-    function showSkeletons() {
-      const list = $('results-list');
-      list.innerHTML = '';
-      for (let i=0;i<6;i++) {
-        list.innerHTML += `<div class="skel"><div class="skel-thumb"></div><div class="skel-lines"><div class="skel-line" style="width:${70+Math.random()*25|0}%"></div><div class="skel-line" style="width:${30+Math.random()*20|0}%"></div></div></div>`;
-      }
-    }
-
-    async function fetchMeta(videoId) {
-      try {
-        const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent('https://noembed.com/embed?url=https://www.youtube.com/watch?v='+videoId)}`);
-        const d = await r.json();
-        return { title: d.title||'Unknown', author: d.author_name||'', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
-      } catch {
-        return { title: 'Video '+videoId, author:'', thumb: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` };
-      }
-    }
-
-    async function doSearch() {
-      const q = $('q').value.trim();
-      if (!q) return;
-      setStatus('Searching…', true);
-      showSkeletons();
-      if (isMobile) openSidebar();
-
-      try {
-        const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%3D%3D`;
-        const r = await fetch(`${PROXY}/proxy?url=${encodeURIComponent(ytUrl)}`);
-        if (!r.ok) throw new Error('Proxy error '+r.status);
-        const html = await r.text();
-        const ids = [], re = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
-        let m;
-        while ((m=re.exec(html))!==null) { if (!ids.includes(m[1])) ids.push(m[1]); if (ids.length>=20) break; }
-        if (!ids.length) {
-          $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-display);font-style:italic;color:var(--text3);font-size:clamp(14px,2.5vw,16px);text-align:center">No results found</div>`;
-          setStatus('No results for "'+q+'"');
-          updateQueueBadge();
-          return;
-        }
-        setStatus(`Loading ${ids.length} results…`, true);
-        const metas = await Promise.all(ids.map(id => fetchMeta(id).then(m => ({id,...m}))));
-        queue = metas;
-        updateQueueBadge();
-        const list = $('results-list');
-        list.innerHTML = '';
-        queue.forEach((item,i) => {
-          const div = document.createElement('div');
-          div.className = 'r-item';
-          div.innerHTML = `<span class="r-num">${String(i+1).padStart(2,'0')}</span><img class="r-thumb" src="${esc(item.thumb)}" alt="" loading="lazy" onerror="this.style.opacity='0'" /><div class="r-info"><div class="r-title">${esc(item.title)}</div><div class="r-ch">${esc(item.author)}</div></div><div class="bars"><span></span><span></span><span></span></div>`;
-          div.addEventListener('click', () => onTrackSelect(i));
-          list.appendChild(div);
-        });
-        setStatus(`${queue.length} tracks for "${q}"`);
-      } catch(e) {
-        $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-mono);color:var(--text3);font-size:clamp(10px,1.5vw,11px);text-align:center">Search failed.<br/>Is the proxy running?</div>`;
-        setStatus('Search error — check proxy.');
-        updateQueueBadge();
-      }
-    }
-
-    $('searchBtn').addEventListener('click', doSearch);
-    $('q').addEventListener('keydown', e => { if (e.key==='Enter') doSearch(); });
-    $('ppBtn').addEventListener('click', () => { if (!audio.src) return; playing ? audio.pause() : audio.play(); });
-    $('prevBtn').addEventListener('click', () => { if (curIdx>0) loadAndPlay(curIdx-1); });
-    $('nextBtn').addEventListener('click', () => { if (curIdx<queue.length-1) loadAndPlay(curIdx+1); });
-    $('vol').addEventListener('input', e => { const v=parseInt(e.target.value); $('volv').textContent=v+'%'; audio.volume=v/100; });
-    audio.volume=0.85;
-    $('prog').addEventListener('click', e => {
-      if (!audio.duration) return;
-      const rect = $('prog').getBoundingClientRect();
-      audio.currentTime = ((e.clientX-rect.left)/rect.width)*audio.duration;
-    });
-    $('prog').addEventListener('touchmove', e => {
-      if (!audio.duration) return;
-      const rect = $('prog').getBoundingClientRect();
-      const touch = e.touches[0];
-      const fraction = Math.max(0,Math.min(1,(touch.clientX-rect.left)/rect.width));
-      $('prog-fill').style.width = Math.round(fraction*100)+'%';
-      $('tc').textContent = fmt(fraction*audio.duration);
-    });
-    $('prog').addEventListener('touchend', e => {
-      if (!audio.duration) return;
-      const rect = $('prog').getBoundingClientRect();
-      const touch = e.changedTouches[0];
-      audio.currentTime = Math.max(0,Math.min(1,(touch.clientX-rect.left)/rect.width))*audio.duration;
-    });
-    document.addEventListener('keydown', e => {
-      if (e.target===$('q')) return;
-      if (e.key===' ') { e.preventDefault(); $('ppBtn').click(); }
-      if (e.key==='ArrowRight') { e.preventDefault(); $('nextBtn').click(); }
-      if (e.key==='ArrowLeft')  { e.preventDefault(); $('prevBtn').click(); }
-      if (e.key==='Escape') closeSidebar();
-    });
+    setStatus(`Loading ${ids.length} results…`, true);
+    const metas = await Promise.all(ids.map(id => fetchMeta(id).then(m => ({ id, ...m }))));
+    queue = metas;
     updateQueueBadge();
-  })();
+    const list = $('results-list');
+    list.innerHTML = '';
+    queue.forEach((item, i) => {
+      const div = document.createElement('div');
+      div.className = 'r-item';
+      div.innerHTML = `<span class="r-num">${String(i+1).padStart(2,'0')}</span><img class="r-thumb" src="${esc(item.thumb)}" alt="" loading="lazy" onerror="this.style.opacity='0'" /><div class="r-info"><div class="r-title">${esc(item.title)}</div><div class="r-ch">${esc(item.author)}</div></div><div class="bars"><span></span><span></span><span></span></div>`;
+      div.addEventListener('click', () => {
+        loadAndPlay(i);
+        if (isMobile) closeSidebar();
+      });
+      list.appendChild(div);
+    });
+    setStatus(`${queue.length} tracks for "${q}"`);
+  } catch (e) {
+    $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-mono);color:var(--text3);font-size:clamp(10px,1.5vw,11px);text-align:center">Search failed.<br/>Is the proxy running?</div>`;
+    setStatus('Search error — check proxy.');
+    updateQueueBadge();
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  EVENT LISTENERS (Search + Controls)
+// ════════════════════════════════════════════════════════════
+$('searchBtn').addEventListener('click', doSearch);
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+$('ppBtn').addEventListener('click', () => {
+  if (!audio.src || !queue.length) return;
+  unlockAudioSession();
+  if (audio.paused) {
+    audio.play().then(() => setPP(true)).catch(() => {});
+  } else {
+    audio.pause(); setPP(false);
+  }
+});
+$('prevBtn').addEventListener('click', () => { if (curIdx > 0) loadAndPlay(curIdx - 1); });
+$('nextBtn').addEventListener('click', () => { if (curIdx < queue.length - 1) loadAndPlay(curIdx + 1); });
+
+$('vol').addEventListener('input', e => {
+  audio.volume = parseInt(e.target.value) / 100;
+  $('volv').textContent = e.target.value + '%';
+});
+
+// Progress bar seek
+const progEl = $('prog');
+if (progEl) {
+  const seek = e => {
+    if (isNaN(audio.duration)) return;
+    const rect = progEl.getBoundingClientRect();
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    audio.currentTime = Math.max(0, Math.min(1, x / rect.width)) * audio.duration;
+  };
+  progEl.addEventListener('click', seek);
+  progEl.addEventListener('touchend', e => { e.preventDefault(); seek(e); }, { passive: false });
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.target === $('q')) return;
+  if (e.key === ' ')          { e.preventDefault(); $('ppBtn').click(); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); $('nextBtn').click(); }
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); $('prevBtn').click(); }
+  if (e.key === 'Escape')     closeSidebar();
+});
+
+// Audio element events
+audio.addEventListener('ended', () => {
+  if (curIdx < queue.length - 1) loadAndPlay(curIdx + 1);
+  else { setPP(false); clearInterval(progTimer); setStatus('Queue finished.'); }
+});
+audio.addEventListener('error', () => {
+  setStatus('Audio stream error — trying next');
+  if (curIdx < queue.length - 1) setTimeout(() => loadAndPlay(curIdx + 1), 2000);
+  else setPP(false);
+});
+audio.addEventListener('pause', () => setPP(false));
+audio.addEventListener('play', () => { setPP(true); startProg(); });
+
+updateQueueBadge();
 </script>
 </body>
 </html>
