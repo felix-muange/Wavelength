@@ -930,8 +930,7 @@ function updateMediaSession(item) {
   });
   navigator.mediaSession.setActionHandler('play',     () => audio.play());
   navigator.mediaSession.setActionHandler('pause',    () => audio.pause());
-  navigator.mediaSession.setActionHandler('previoustrack', () => { if(curIdx>0) loadAndPlay(curIdx-1); });
-  navigator.mediaSession.setActionHandler('nexttrack',     () => { if(curIdx<queue.length-1) loadAndPlay(curIdx+1); });
+  // No previous/next handlers – we only play the selected track
 }
 
 // ════════════════════════════════════════════════════════════
@@ -961,29 +960,37 @@ function setPP(isP) {
 }
 
 // ════════════════════════════════════════════════════════════
-//  PLAYBACK LOGIC (iOS SAFE)
+//  PLAYBACK LOGIC (iOS SAFE, plays only selected track)
 // ════════════════════════════════════════════════════════════
 function loadAndPlay(idx) {
   if (idx < 0 || idx >= queue.length) return;
   curIdx = idx;
   const item = queue[idx];
 
+  // Update UI
   document.querySelectorAll('.r-item').forEach((el,i) => el.classList.toggle('active', i===idx));
   $('np-title').textContent = item.title;
   $('np-ch').textContent = item.author || '';
   setStatus(`Loading — ${item.title}`, true);
 
+  // iOS audio session unlock
   unlockAudioSession();
+
+  // Pause any previous playback
   if (!audio.paused) audio.pause();
+
+  // Call play() synchronously while still in the user gesture (if triggered by click)
   const playPromise = audio.play();
 
+  // Set the stream URL **after** calling play() so iOS keeps the user gesture
   const streamUrl = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
   audio.src = streamUrl;
   audio.load();
 
   if (playPromise !== undefined) {
     playPromise.then(() => {
-      setPP(true); startProg();
+      setPP(true);
+      startProg();
       updateMediaSession(item);
       setStatus(`Playing — ${item.title}`);
       const cover = $('cover-img');
@@ -997,15 +1004,15 @@ function loadAndPlay(idx) {
         setPP(false);
       } else {
         console.warn('Play error:', err);
-        if (curIdx < queue.length - 1) setTimeout(() => loadAndPlay(curIdx + 1), 1500);
-        else { setStatus('Playback error.'); setPP(false); }
+        setStatus('Playback error.');
+        setPP(false);
       }
     });
   }
 }
 
 // ════════════════════════════════════════════════════════════
-//  SEARCH FUNCTIONS
+//  SEARCH FUNCTIONS  (No prefetch, no auto‑advance)
 // ════════════════════════════════════════════════════════════
 function showSkeletons() {
   const list = $('results-list');
@@ -1062,12 +1069,7 @@ async function doSearch() {
       });
       list.appendChild(div);
     });
-    setStatus(`${queue.length} tracks for "${q}"`);
-
-    // ───── NEW: prefetch audio URLs in background ─────
-    prefetchQueue(ids);
-    // ──────────────────────────────────────────────────
-
+    setStatus(`${queue.length} tracks for "${q}" — select one to play`);
   } catch (e) {
     $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-mono);color:var(--text3);font-size:clamp(10px,1.5vw,11px);text-align:center">Search failed.<br/>Is the proxy running?</div>`;
     setStatus('Search error — check proxy.');
@@ -1075,21 +1077,8 @@ async function doSearch() {
   }
 }
 
-// ───── Prefetch helper (called by doSearch) ─────
-async function prefetchQueue(ids) {
-  if (!ids.length) return;
-  const chunk = ids.slice(0, 20).join(',');
-  try {
-    await fetch(`${PROXY}/prefetch?ids=${encodeURIComponent(chunk)}`);
-    setStatus(`${queue.length} tracks ready — tap a song to play`);
-  } catch (e) {
-    console.warn('Prefetch failed', e);
-  }
-}
-// ─────────────────────────────────────────────────
-
 // ════════════════════════════════════════════════════════════
-//  EVENT LISTENERS (Search + Controls)
+//  EVENT LISTENERS (Controls)
 // ════════════════════════════════════════════════════════════
 $('searchBtn').addEventListener('click', doSearch);
 $('q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
@@ -1103,8 +1092,10 @@ $('ppBtn').addEventListener('click', () => {
     audio.pause(); setPP(false);
   }
 });
-$('prevBtn').addEventListener('click', () => { if (curIdx > 0) loadAndPlay(curIdx - 1); });
-$('nextBtn').addEventListener('click', () => { if (curIdx < queue.length - 1) loadAndPlay(curIdx + 1); });
+
+// Previous / Next buttons now do nothing (no auto‑advance)
+$('prevBtn').addEventListener('click', () => {});
+$('nextBtn').addEventListener('click', () => {});
 
 $('vol').addEventListener('input', e => {
   audio.volume = parseInt(e.target.value) / 100;
@@ -1128,23 +1119,28 @@ if (progEl) {
 document.addEventListener('keydown', e => {
   if (e.target === $('q')) return;
   if (e.key === ' ')          { e.preventDefault(); $('ppBtn').click(); }
-  if (e.key === 'ArrowRight') { e.preventDefault(); $('nextBtn').click(); }
-  if (e.key === 'ArrowLeft')  { e.preventDefault(); $('prevBtn').click(); }
+  // Arrow keys disabled since we don't auto‑advance
   if (e.key === 'Escape')      closeSidebar();
 });
 
-// Audio element events
+// ════════════════════════════════════════════════════════════
+//  AUDIO ELEMENT EVENTS (no auto‑advance)
+// ════════════════════════════════════════════════════════════
 audio.addEventListener('ended', () => {
-  if (curIdx < queue.length - 1) loadAndPlay(curIdx + 1);
-  else { setPP(false); clearInterval(progTimer); setStatus('Queue finished.'); }
+  // Song finished — just stop
+  setPP(false);
+  clearInterval(progTimer);
+  setStatus('Finished');
 });
 audio.addEventListener('error', () => {
-  setStatus('Audio stream error — trying next');
-  if (curIdx < queue.length - 1) setTimeout(() => loadAndPlay(curIdx + 1), 2000);
-  else setPP(false);
+  setStatus('Audio stream error');
+  setPP(false);
 });
 audio.addEventListener('pause', () => setPP(false));
-audio.addEventListener('play', () => { setPP(true); startProg(); });
+audio.addEventListener('play',  () => {
+  setPP(true);
+  startProg();
+});
 
 updateQueueBadge();
 </script>
