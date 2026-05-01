@@ -812,36 +812,34 @@ const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0
 const $ = id => document.getElementById(id);
 
 let queue = [], curIdx = -1, progTimer = null, playing = false;
-let switchingTrack = false;                              // prevents UI glitch on track change
+let switchingTrack = false;
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-// ── Audio element – completely independent of Web Audio API ──
+// Audio element – completely independent of Web Audio
 const audio = new Audio();
 audio.preload = 'none';
 audio.setAttribute('playsinline', 'true');
 audio.setAttribute('webkit-playsinline', 'true');
 
-// ── One‑time AudioContext only used to satisfy iOS user‑gesture requirement ──
+// One‑time gesture unlock (synchronous part)
 let gestureUnlocked = false;
-
-async function unlockAudioSession() {
+function unlockGesture() {
   if (gestureUnlocked) return;
   try {
+    // Create a temporary AudioContext and resume it right now
     const tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // Play a 1‑ms silent buffer – this tells iOS "a user gesture has started audio playback"
+    // Play a silent buffer to fully satisfy iOS
     const buf = tmpCtx.createBuffer(1, 1, 22050);
     const src = tmpCtx.createBufferSource();
     src.buffer = buf;
     src.connect(tmpCtx.destination);
     src.start(0);
-    await tmpCtx.resume();          // make sure context is running
-    // Keep the context alive for a short while, then close it (no longer needed)
+    tmpCtx.resume();   // not await‑ing – we just fire and forget
+    // Close the context after 1 second (it's no longer needed)
     setTimeout(() => tmpCtx.close(), 1000);
     gestureUnlocked = true;
-  } catch (e) {
-    console.warn('Audio unlock error:', e);
-  }
+  } catch (e) { /* ignore */ }
 }
 
 // ── Utilities ──
@@ -940,43 +938,51 @@ function setPP(isP) {
   }
 }
 
-// ── Playback (iOS‑safe, no AudioContext routing) ──
+// ── Playback (synchronous gesture handling, no async gaps) ──
 function loadAndPlay(idx) {
   if (idx < 0 || idx >= queue.length) return;
   switchingTrack = true;
   curIdx = idx;
   const item = queue[idx];
+
+  // Update UI immediately
   document.querySelectorAll('.r-item').forEach((el,i) => el.classList.toggle('active', i===idx));
   $('np-title').textContent = item.title;
   $('np-ch').textContent = item.author || '';
   setStatus(`Loading — ${item.title}`, true);
 
-  unlockAudioSession().then(() => {
-    if (!audio.paused) audio.pause();   // the pause event will be ignored (switchingTrack)
-    const playPromise = audio.play();   // call play() synchronously inside the user gesture
-    audio.src = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
-    audio.load();
+  // Unlock audio session synchronously (first tap)
+  unlockGesture();
 
-    if (playPromise !== undefined) {
-      playPromise.then(() => {
-        setPP(true);
-        startProg();
-        updateMediaSession(item);
-        setStatus(`Playing — ${item.title}`);
-        const cover = $('cover-img');
-        if (cover && item.thumb) {
-          cover.src = item.thumb;
-          cover.style.opacity = '0.7';
-        }
-        switchingTrack = false;
-      }).catch(err => {
-        console.error('Playback error:', err);
-        setStatus('Playback error');
-        setPP(false);
-        switchingTrack = false;
-      });
-    }
-  });
+  // Pause any previous playback (pause event will be ignored because switchingTrack=true)
+  if (!audio.paused) audio.pause();
+
+  // Set source and load (still inside the click handler)
+  audio.src = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
+  audio.load();
+
+  // Call play() NOW – synchronously inside the user gesture
+  const playPromise = audio.play();
+
+  if (playPromise !== undefined) {
+    playPromise.then(() => {
+      setPP(true);
+      startProg();
+      updateMediaSession(item);
+      setStatus(`Playing — ${item.title}`);
+      const cover = $('cover-img');
+      if (cover && item.thumb) {
+        cover.src = item.thumb;
+        cover.style.opacity = '0.7';
+      }
+      switchingTrack = false;
+    }).catch(err => {
+      console.error('Playback error:', err);
+      setStatus('Playback error');
+      setPP(false);
+      switchingTrack = false;
+    });
+  }
 }
 
 // ── Search ──
@@ -1046,7 +1052,7 @@ $('q').addEventListener('keydown', e => { if (e.key==='Enter') doSearch(); });
 
 $('ppBtn').addEventListener('click', () => {
   if (!audio.src || !queue.length) return;
-  unlockAudioSession();
+  unlockGesture();   // just in case
   if (audio.paused) {
     audio.play().then(() => setPP(true)).catch(() => {});
   } else {
@@ -1081,14 +1087,14 @@ document.addEventListener('keydown', e => {
   if (e.key==='Escape') closeSidebar();
 });
 
-// ── Audio element events (no AudioContext dependency) ──
+// ── Audio events (no AudioContext dependency) ──
 audio.addEventListener('play', () => {
   setPP(true);
   startProg();
 });
 
 audio.addEventListener('pause', () => {
-  if (switchingTrack) return;   // ignore pause while switching tracks
+  if (switchingTrack) return;
   setPP(false);
 });
 
