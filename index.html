@@ -799,7 +799,6 @@
   }
 </script>
 
-<!-- ── Full App Logic (with background keep-alive) ── -->
 <script>
 'use strict';
 
@@ -809,44 +808,18 @@ const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0
 const $ = id => document.getElementById(id);
 
 let queue = [], curIdx = -1, progTimer = null, playing = false;
+let switchingTrack = false;            // prevents pause event from mismatching UI
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-// ── Audio element ──
+// ── Audio element with playsinline (important for iOS) ──
 const audio = new Audio();
 audio.preload = 'none';
+audio.setAttribute('playsinline', 'true');
+audio.setAttribute('webkit-playsinline', 'true');
 
-// ── Web Audio for silent keep-alive ──
-let audioCtx = null, silentOsc = null, silentGain = null;
-
-function startSilentKeepAlive() {
-  if (!audioCtx) return;
-  if (silentOsc) return; // already running
-  try {
-    silentOsc = audioCtx.createOscillator();
-    silentGain = audioCtx.createGain();
-    silentGain.gain.value = 0.0001; // inaudible
-    silentOsc.connect(silentGain);
-    silentGain.connect(audioCtx.destination);
-    silentOsc.type = 'sine';
-    silentOsc.frequency.value = 440;
-    silentOsc.start(0);
-  } catch (e) {
-    console.warn('Silent oscillator error:', e);
-  }
-}
-
-function stopSilentKeepAlive() {
-  if (silentOsc) {
-    try { silentOsc.stop(); } catch(e) {}
-    silentOsc.disconnect();
-    silentOsc = null;
-  }
-  if (silentGain) {
-    silentGain.disconnect();
-    silentGain = null;
-  }
-}
+// We only use AudioContext to unlock the session once – no silent oscillator.
+let audioCtx = null;
 
 async function unlockAudioSession() {
   if (!audioCtx) {
@@ -862,7 +835,7 @@ async function unlockAudioSession() {
   if (audioCtx.state === 'suspended') {
     await audioCtx.resume();
   }
-  // Play a tiny silent buffer to fully unlock
+  // One‑time silent buffer to fully activate the session
   const buf = audioCtx.createBuffer(1, 1, 22050);
   const source = audioCtx.createBufferSource();
   source.buffer = buf;
@@ -870,28 +843,7 @@ async function unlockAudioSession() {
   source.start(0);
 }
 
-// ── Page visibility: keep audio alive in background ──
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    // Page hidden (screen lock / switch app) – start silent oscillator if music is playing
-    if (playing) {
-      startSilentKeepAlive();
-    }
-  } else {
-    // Page visible again – stop silent oscillator to save battery
-    stopSilentKeepAlive();
-    // Refresh progress display after returning
-    if (playing && !isNaN(audio.duration)) {
-      const pf = $('prog-fill'), tc = $('tc'), td = $('td');
-      const pct = (audio.currentTime / audio.duration) * 100;
-      if (pf) pf.style.width = pct + '%';
-      if (tc) tc.textContent = fmt(audio.currentTime);
-      if (td) td.textContent = fmt(audio.duration);
-    }
-  }
-});
-
-// ── Utility functions ──
+// ── Utilities ──
 function fmt(s) {
   if (isNaN(s) || s < 0) return '0:00';
   const m = Math.floor(s / 60), sec = Math.floor(s % 60);
@@ -906,7 +858,7 @@ function setStatus(msg, loading = false) {
   el.innerHTML = loading ? `<span class="spin"></span> ${msg}` : msg;
 }
 
-// ── Sidebar / queue toggle ──
+// ── Sidebar ──
 const isMobileMQ = window.matchMedia('(max-width: 899px)');
 let isMobile = isMobileMQ.matches;
 isMobileMQ.addEventListener('change', e => {
@@ -959,6 +911,9 @@ function updateMediaSession(item) {
   });
   navigator.mediaSession.setActionHandler('play', () => audio.play());
   navigator.mediaSession.setActionHandler('pause', () => audio.pause());
+  if (playing) {
+    navigator.mediaSession.playbackState = 'playing';
+  }
 }
 
 // ── Progress ──
@@ -972,6 +927,7 @@ function startProg() {
     $('td').textContent = fmt(audio.duration);
   }, 800);
 }
+
 function setPP(isP) {
   playing = isP;
   $('playIcon').style.display = isP ? 'none' : '';
@@ -980,25 +936,28 @@ function setPP(isP) {
     const bars = el.querySelector('.bars');
     if (bars) bars.style.animationPlayState = (i === curIdx && isP) ? 'running' : 'paused';
   });
-  // Manage silent keep-alive based on visibility
-  if (isP && document.hidden) startSilentKeepAlive();
-  else if (!isP) stopSilentKeepAlive();
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.playbackState = isP ? 'playing' : 'paused';
+  }
 }
 
-// ── Playback (iOS safe) ──
+// ── Playback (iOS‑safe, no background oscillator) ──
 function loadAndPlay(idx) {
   if (idx < 0 || idx >= queue.length) return;
+  switchingTrack = true;
   curIdx = idx;
   const item = queue[idx];
   document.querySelectorAll('.r-item').forEach((el,i) => el.classList.toggle('active', i===idx));
   $('np-title').textContent = item.title;
   $('np-ch').textContent = item.author || '';
   setStatus(`Loading — ${item.title}`, true);
+
   unlockAudioSession().then(() => {
-    if (!audio.paused) audio.pause();
+    if (!audio.paused) audio.pause();   // ignored by pause listener because of switchingTrack
     const playPromise = audio.play();
     audio.src = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
     audio.load();
+
     if (playPromise !== undefined) {
       playPromise.then(() => {
         setPP(true);
@@ -1010,10 +969,12 @@ function loadAndPlay(idx) {
           cover.src = item.thumb;
           cover.style.opacity = '0.7';
         }
+        switchingTrack = false;
       }).catch(err => {
         console.error('Playback error:', err);
         setStatus('Playback error');
         setPP(false);
+        switchingTrack = false;
       });
     }
   });
@@ -1070,6 +1031,13 @@ async function doSearch() {
       list.appendChild(div);
     });
     setStatus(`${queue.length} tracks — select one to play`);
+
+    // Optional hint: if on iOS and not in standalone mode, suggest adding to Home Screen
+    if (IS_IOS && !navigator.standalone) {
+      setTimeout(() => {
+        setStatus(`${queue.length} tracks ready — add to Home Screen for background playback`);
+      }, 2000);
+    }
   } catch(e) {
     $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-mono);color:var(--text3);font-size:clamp(10px,1.5vw,11px);text-align:center">Search failed.<br/>Is the proxy running?</div>`;
     setStatus('Search error');
@@ -1080,18 +1048,26 @@ async function doSearch() {
 // ── Event listeners ──
 $('searchBtn').addEventListener('click', doSearch);
 $('q').addEventListener('keydown', e => { if (e.key==='Enter') doSearch(); });
+
 $('ppBtn').addEventListener('click', () => {
   if (!audio.src || !queue.length) return;
   unlockAudioSession();
-  if (audio.paused) audio.play().then(() => setPP(true)).catch(() => {});
-  else { audio.pause(); setPP(false); }
+  if (audio.paused) {
+    audio.play().then(() => setPP(true)).catch(() => {});
+  } else {
+    audio.pause();
+    setPP(false);
+  }
 });
+
 $('prevBtn').addEventListener('click', () => {});
 $('nextBtn').addEventListener('click', () => {});
+
 $('vol').addEventListener('input', e => {
   audio.volume = parseInt(e.target.value)/100;
   $('volv').textContent = e.target.value + '%';
 });
+
 const progEl = $('prog');
 if (progEl) {
   const seek = e => {
@@ -1103,28 +1079,35 @@ if (progEl) {
   progEl.addEventListener('click', seek);
   progEl.addEventListener('touchend', e => { e.preventDefault(); seek(e); }, { passive: false });
 }
+
 document.addEventListener('keydown', e => {
   if (e.target===$('q')) return;
   if (e.key===' ') { e.preventDefault(); $('ppBtn').click(); }
   if (e.key==='Escape') closeSidebar();
 });
 
-audio.addEventListener('ended', () => {
-  setPP(false);
-  clearInterval(progTimer);
-  stopSilentKeepAlive();
-  setStatus('Finished');
-});
-audio.addEventListener('error', () => {
-  setStatus('Audio stream error');
-  setPP(false);
-  stopSilentKeepAlive();
-});
-audio.addEventListener('pause', () => { setPP(false); stopSilentKeepAlive(); });
+// ── Audio events (with track‑switch guard) ──
 audio.addEventListener('play', () => {
   setPP(true);
   startProg();
-  if (document.hidden) startSilentKeepAlive();
+});
+
+audio.addEventListener('pause', () => {
+  if (switchingTrack) return;   // ignore during track change
+  setPP(false);
+});
+
+audio.addEventListener('ended', () => {
+  switchingTrack = false;
+  setPP(false);
+  clearInterval(progTimer);
+  setStatus('Finished');
+});
+
+audio.addEventListener('error', () => {
+  switchingTrack = false;
+  setStatus('Audio stream error');
+  setPP(false);
 });
 
 updateQueueBadge();
