@@ -20,7 +20,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400&family=Syne:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
 <style>
-  /* ── All original CSS (unchanged) ── */
   :root {
     --bg:        #0a0a0c;
     --bg2:       #111115;
@@ -42,7 +41,6 @@
     --font-mono:    'DM Mono', monospace;
 
     --sidebar-width: clamp(260px, 28vw, 320px);
-    --header-h: clamp(52px, 7vh, 64px);
     --statusbar-h: clamp(32px, 5vh, 42px);
     --touch-min: 44px;
   }
@@ -80,7 +78,7 @@
 
   #app {
     display: grid;
-    grid-template-rows: var(--header-h) 1fr var(--statusbar-h);
+    grid-template-rows: auto 1fr var(--statusbar-h);   /* header height auto to accommodate safe‑area inset */
     grid-template-columns: 1fr;
     grid-template-areas:
       "header"
@@ -102,6 +100,8 @@
     align-items: center;
     gap: clamp(8px, 2vw, 24px);
     padding: clamp(8px, 1.5vw, 20px) clamp(12px, 3vw, 28px);
+    /* Push the header below the notch / Dynamic Island in PWA mode */
+    padding-top: calc( env(safe-area-inset-top, 0px) + clamp(8px, 1.5vw, 20px) );
     border-bottom: 1px solid var(--line);
     background: var(--bg);
     z-index: 20;
@@ -668,7 +668,7 @@
 
   @media (min-width: 900px) {
     #app {
-      grid-template-rows: var(--header-h) 1fr var(--statusbar-h);
+      grid-template-rows: auto 1fr var(--statusbar-h);   /* keep auto for header */
       grid-template-columns: var(--sidebar-width) 1fr;
       grid-template-areas:
         "header header"
@@ -690,7 +690,10 @@
     @media (max-width: 480px) {
       .proxy-status { display: none; }
       .search-wrap { max-width: none; }
-      #header { gap: 6px; padding: 8px 10px; }
+      #header { gap: 6px; padding: 8px 10px;
+        /* still need to account for safe area */
+        padding-top: calc(env(safe-area-inset-top, 0px) + 8px);
+      }
       .logo { font-size: 16px; }
       #q { font-size: 12px; padding: 9px 10px; }
       #searchBtn { padding: 9px 10px; font-size: 9px; }
@@ -799,6 +802,7 @@
   }
 </script>
 
+<!-- ── Full App Logic (with play‑button sync & iOS background hint) ── -->
 <script>
 'use strict';
 
@@ -808,17 +812,15 @@ const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0
 const $ = id => document.getElementById(id);
 
 let queue = [], curIdx = -1, progTimer = null, playing = false;
-let switchingTrack = false;            // prevents pause event from mismatching UI
+let switchingTrack = false;
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-// ── Audio element with playsinline (important for iOS) ──
 const audio = new Audio();
 audio.preload = 'none';
 audio.setAttribute('playsinline', 'true');
 audio.setAttribute('webkit-playsinline', 'true');
 
-// We only use AudioContext to unlock the session once – no silent oscillator.
 let audioCtx = null;
 
 async function unlockAudioSession() {
@@ -835,7 +837,6 @@ async function unlockAudioSession() {
   if (audioCtx.state === 'suspended') {
     await audioCtx.resume();
   }
-  // One‑time silent buffer to fully activate the session
   const buf = audioCtx.createBuffer(1, 1, 22050);
   const source = audioCtx.createBufferSource();
   source.buffer = buf;
@@ -843,7 +844,6 @@ async function unlockAudioSession() {
   source.start(0);
 }
 
-// ── Utilities ──
 function fmt(s) {
   if (isNaN(s) || s < 0) return '0:00';
   const m = Math.floor(s / 60), sec = Math.floor(s % 60);
@@ -858,7 +858,6 @@ function setStatus(msg, loading = false) {
   el.innerHTML = loading ? `<span class="spin"></span> ${msg}` : msg;
 }
 
-// ── Sidebar ──
 const isMobileMQ = window.matchMedia('(max-width: 899px)');
 let isMobile = isMobileMQ.matches;
 isMobileMQ.addEventListener('change', e => {
@@ -888,7 +887,6 @@ function updateQueueBadge() {
   if (count > 0) badge.textContent = count;
 }
 
-// ── Proxy health ──
 async function checkProxy() {
   try {
     const r = await fetch(`${PROXY}/health`, { signal: AbortSignal.timeout(3000) });
@@ -900,7 +898,6 @@ async function checkProxy() {
 function proxyErr() { $('proxyDot').className = 'dot err'; $('proxyLabel').textContent = 'proxy down'; setStatus('Proxy offline'); }
 checkProxy(); setInterval(checkProxy, 15000);
 
-// ── Media Session ──
 function updateMediaSession(item) {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.metadata = new MediaMetadata({
@@ -916,7 +913,6 @@ function updateMediaSession(item) {
   }
 }
 
-// ── Progress ──
 function startProg() {
   clearInterval(progTimer);
   progTimer = setInterval(() => {
@@ -941,7 +937,6 @@ function setPP(isP) {
   }
 }
 
-// ── Playback (iOS‑safe, no background oscillator) ──
 function loadAndPlay(idx) {
   if (idx < 0 || idx >= queue.length) return;
   switchingTrack = true;
@@ -953,7 +948,7 @@ function loadAndPlay(idx) {
   setStatus(`Loading — ${item.title}`, true);
 
   unlockAudioSession().then(() => {
-    if (!audio.paused) audio.pause();   // ignored by pause listener because of switchingTrack
+    if (!audio.paused) audio.pause();
     const playPromise = audio.play();
     audio.src = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
     audio.load();
@@ -980,7 +975,6 @@ function loadAndPlay(idx) {
   });
 }
 
-// ── Search ──
 function showSkeletons() {
   const list = $('results-list');
   list.innerHTML = '';
@@ -1032,7 +1026,6 @@ async function doSearch() {
     });
     setStatus(`${queue.length} tracks — select one to play`);
 
-    // Optional hint: if on iOS and not in standalone mode, suggest adding to Home Screen
     if (IS_IOS && !navigator.standalone) {
       setTimeout(() => {
         setStatus(`${queue.length} tracks ready — add to Home Screen for background playback`);
@@ -1045,7 +1038,6 @@ async function doSearch() {
   }
 }
 
-// ── Event listeners ──
 $('searchBtn').addEventListener('click', doSearch);
 $('q').addEventListener('keydown', e => { if (e.key==='Enter') doSearch(); });
 
@@ -1086,14 +1078,13 @@ document.addEventListener('keydown', e => {
   if (e.key==='Escape') closeSidebar();
 });
 
-// ── Audio events (with track‑switch guard) ──
 audio.addEventListener('play', () => {
   setPP(true);
   startProg();
 });
 
 audio.addEventListener('pause', () => {
-  if (switchingTrack) return;   // ignore during track change
+  if (switchingTrack) return;
   setPP(false);
 });
 
