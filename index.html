@@ -812,38 +812,39 @@ const PROXY = (location.hostname === 'localhost' || location.hostname === '127.0
 const $ = id => document.getElementById(id);
 
 let queue = [], curIdx = -1, progTimer = null, playing = false;
-let switchingTrack = false;
+let switchingTrack = false;                              // prevents UI glitch on track change
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
+// ── Audio element – completely independent of Web Audio API ──
 const audio = new Audio();
 audio.preload = 'none';
 audio.setAttribute('playsinline', 'true');
 audio.setAttribute('webkit-playsinline', 'true');
 
-let audioCtx = null;
+// ── One‑time AudioContext only used to satisfy iOS user‑gesture requirement ──
+let gestureUnlocked = false;
 
 async function unlockAudioSession() {
-  if (!audioCtx) {
-    try {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const src = audioCtx.createMediaElementSource(audio);
-      src.connect(audioCtx.destination);
-    } catch (e) {
-      console.warn('AudioContext error:', e);
-      return;
-    }
+  if (gestureUnlocked) return;
+  try {
+    const tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Play a 1‑ms silent buffer – this tells iOS "a user gesture has started audio playback"
+    const buf = tmpCtx.createBuffer(1, 1, 22050);
+    const src = tmpCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(tmpCtx.destination);
+    src.start(0);
+    await tmpCtx.resume();          // make sure context is running
+    // Keep the context alive for a short while, then close it (no longer needed)
+    setTimeout(() => tmpCtx.close(), 1000);
+    gestureUnlocked = true;
+  } catch (e) {
+    console.warn('Audio unlock error:', e);
   }
-  if (audioCtx.state === 'suspended') {
-    await audioCtx.resume();
-  }
-  const buf = audioCtx.createBuffer(1, 1, 22050);
-  const source = audioCtx.createBufferSource();
-  source.buffer = buf;
-  source.connect(audioCtx.destination);
-  source.start(0);
 }
 
+// ── Utilities ──
 function fmt(s) {
   if (isNaN(s) || s < 0) return '0:00';
   const m = Math.floor(s / 60), sec = Math.floor(s % 60);
@@ -858,6 +859,7 @@ function setStatus(msg, loading = false) {
   el.innerHTML = loading ? `<span class="spin"></span> ${msg}` : msg;
 }
 
+// ── Sidebar ──
 const isMobileMQ = window.matchMedia('(max-width: 899px)');
 let isMobile = isMobileMQ.matches;
 isMobileMQ.addEventListener('change', e => {
@@ -887,6 +889,7 @@ function updateQueueBadge() {
   if (count > 0) badge.textContent = count;
 }
 
+// ── Proxy health ──
 async function checkProxy() {
   try {
     const r = await fetch(`${PROXY}/health`, { signal: AbortSignal.timeout(3000) });
@@ -898,6 +901,7 @@ async function checkProxy() {
 function proxyErr() { $('proxyDot').className = 'dot err'; $('proxyLabel').textContent = 'proxy down'; setStatus('Proxy offline'); }
 checkProxy(); setInterval(checkProxy, 15000);
 
+// ── Media Session ──
 function updateMediaSession(item) {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.metadata = new MediaMetadata({
@@ -908,11 +912,10 @@ function updateMediaSession(item) {
   });
   navigator.mediaSession.setActionHandler('play', () => audio.play());
   navigator.mediaSession.setActionHandler('pause', () => audio.pause());
-  if (playing) {
-    navigator.mediaSession.playbackState = 'playing';
-  }
+  if (playing) navigator.mediaSession.playbackState = 'playing';
 }
 
+// ── Progress ──
 function startProg() {
   clearInterval(progTimer);
   progTimer = setInterval(() => {
@@ -937,6 +940,7 @@ function setPP(isP) {
   }
 }
 
+// ── Playback (iOS‑safe, no AudioContext routing) ──
 function loadAndPlay(idx) {
   if (idx < 0 || idx >= queue.length) return;
   switchingTrack = true;
@@ -948,8 +952,8 @@ function loadAndPlay(idx) {
   setStatus(`Loading — ${item.title}`, true);
 
   unlockAudioSession().then(() => {
-    if (!audio.paused) audio.pause();
-    const playPromise = audio.play();
+    if (!audio.paused) audio.pause();   // the pause event will be ignored (switchingTrack)
+    const playPromise = audio.play();   // call play() synchronously inside the user gesture
     audio.src = `${PROXY}/stream?videoId=${item.id}&_t=${Date.now()}`;
     audio.load();
 
@@ -975,6 +979,7 @@ function loadAndPlay(idx) {
   });
 }
 
+// ── Search ──
 function showSkeletons() {
   const list = $('results-list');
   list.innerHTML = '';
@@ -1025,11 +1030,8 @@ async function doSearch() {
       list.appendChild(div);
     });
     setStatus(`${queue.length} tracks — select one to play`);
-
     if (IS_IOS && !navigator.standalone) {
-      setTimeout(() => {
-        setStatus(`${queue.length} tracks ready — add to Home Screen for background playback`);
-      }, 2000);
+      setTimeout(() => setStatus(`${queue.length} tracks ready — add to Home Screen for background playback`), 2000);
     }
   } catch(e) {
     $('results-list').innerHTML = `<div style="padding:1.5rem;font-family:var(--font-mono);color:var(--text3);font-size:clamp(10px,1.5vw,11px);text-align:center">Search failed.<br/>Is the proxy running?</div>`;
@@ -1038,6 +1040,7 @@ async function doSearch() {
   }
 }
 
+// ── Event listeners ──
 $('searchBtn').addEventListener('click', doSearch);
 $('q').addEventListener('keydown', e => { if (e.key==='Enter') doSearch(); });
 
@@ -1078,13 +1081,14 @@ document.addEventListener('keydown', e => {
   if (e.key==='Escape') closeSidebar();
 });
 
+// ── Audio element events (no AudioContext dependency) ──
 audio.addEventListener('play', () => {
   setPP(true);
   startProg();
 });
 
 audio.addEventListener('pause', () => {
-  if (switchingTrack) return;
+  if (switchingTrack) return;   // ignore pause while switching tracks
   setPP(false);
 });
 
