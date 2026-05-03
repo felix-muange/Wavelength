@@ -151,18 +151,38 @@
         function playIdx(idx) {
             if(idx < 0 || idx >= queue.length) return;
             curIdx = idx; const t = queue[idx];
-            $('title').innerText = t.title; $('author').innerText = t.author;
-            $('cover').src = t.thumb; $('blurBg').style.backgroundImage = `url(${t.thumb})`;
-            $('ppBtn').innerHTML = '<small>...</small>';
             
+            // UI Update (Instant)
+            $('title').innerText = t.title; 
+            $('author').innerText = t.author;
+            $('cover').src = t.thumb; 
+            $('blurBg').style.backgroundImage = `url(${t.thumb})`;
+            $('ppBtn').innerHTML = '<div class="spinner"></div>'; // Add a CSS spinner here
+            
+            // THE KICKSTART:
+            // Resetting the object and forcing an immediate load helps bypass 
+            // the "waiting for data" silence on mobile.
             audio.pause();
             audio.src = `/stream?videoId=${t.id}`;
+            audio.preload = "auto";
             audio.load();
-            audio.play().then(() => $('ppBtn').innerText = "⏸").catch(() => $('ppBtn').innerText = "▶");
+
+            // High-priority play call
+            let playPromise = audio.play();
+            
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    $('ppBtn').innerText = "⏸";
+                }).catch(error => {
+                    console.log("Playback delayed or blocked", error);
+                    // On mobile, if it blocks, the user just taps the Play icon manually
+                    $('ppBtn').innerText = "▶";
+                });
+            }
 
             if(window.innerWidth < 1000) closeSidebar();
         }
-
+        
         function togglePlay() {
             if(!audio.src) return;
             if(audio.paused) { audio.play(); $('ppBtn').innerText = "⏸"; }
